@@ -1,35 +1,33 @@
-from datetime import timedelta
-
 import streamlit as st
 
-from agent import AgentContext
+import routing
+from agent_context import build_context
 from agent_panel import agent_dock, agent_drawer
 from auth_ui import render_header
-from calendar_data import build_events
-from state import DOCK_RATIO, agent_mode, get_calendar, get_recs, get_today, init_state
+from menu import get_leaf
+from nav_ui import apply_pending_navigation, build_pages, current_leaf_id, render_sidebar
+from state import DOCK_RATIO, agent_mode, init_state
 from viewport import mount_probe
 
 st.set_page_config(page_title="F&B Pilot", page_icon=":material/storefront:", layout="wide")
 st.logo("assets/logo.svg", size="large")
 init_state()
 
-page = st.navigation(
-    [
-        st.Page("app_pages/dashboard.py", title="대시보드", icon=":material/calendar_month:", default=True),
-        st.Page("app_pages/inventory.py", title="매출/재고 관리", icon=":material/inventory_2:"),
-        st.Page("app_pages/monitoring.py", title="매장 모니터링", icon=":material/monitor_heart:"),
-        st.Page("app_pages/settings.py", title="설정", icon=":material/settings:"),
-    ],
-    position="sidebar",
-)
+pages = build_pages()
+routing.PAGES = pages
+page = st.navigation(list(pages.values()), position="hidden")   # 메뉴는 nav_ui가 직접 그린다
+apply_pending_navigation()
 
-today, cal, recs = get_today(), get_calendar(), get_recs()
-ctx = AgentContext(today, recs, build_events(st.session_state.events, recs, cal, today, today + timedelta(days=14)))
+leaf_id = current_leaf_id(page)
+leaf = get_leaf(leaf_id)
+chat_page = leaf.view == "ai.chat"          # Q&A 화면은 본문이 곧 대화창이라 에이전트 패널을 숨김
 mode = agent_mode()
+ctx = build_context()
 
-render_header(page, mode, lambda: agent_drawer(ctx))
+render_sidebar(leaf_id)
+render_header(leaf_id, leaf.title, mode, lambda: agent_drawer(ctx), show_agent=not chat_page)
 
-if mode == "dock" and st.session_state.agent_open:
+if mode == "dock" and st.session_state.agent_open and not chat_page:
     main, side = st.columns(list(DOCK_RATIO), gap="medium")
 else:
     main, side = st.container(), None

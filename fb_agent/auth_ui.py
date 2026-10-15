@@ -1,8 +1,11 @@
-"""상단 헤더: 페이지 제목 + 에이전트 토글 + 로그인/회원가입/프로필.
+"""상단 헤더: 제목·브레드크럼·즐겨찾기 + 매장 선택 + 에이전트 토글 + 로그인/회원가입/프로필.
 
 [auth] 시크릿이 설정되어 있으면 st.login()(OIDC)을 쓰고, 없으면 데모 모드(비밀번호 없는 이름·이메일 입력)로 동작.
 """
 import streamlit as st
+
+from menu import STORES, breadcrumb, icon_of
+from state import toggle_favorite
 
 
 def _auth_configured() -> bool:
@@ -34,44 +37,57 @@ def _demo_dialog(mode: str):
                 st.rerun()
 
 
-def _open_auth(mode: str):
+def open_auth(mode: str):
     if _auth_configured():
         st.login()
     else:
         _demo_dialog(mode)
 
 
-def _toggle_agent():
-    st.session_state.agent_open = not st.session_state.agent_open
-
-
-def _logout():
+def logout():
     if _auth_configured():
         st.logout()
     else:
         st.session_state.user = None
 
 
-def render_header(page, agent_mode: str, open_drawer):
-    left, right = st.columns([5, 4], vertical_alignment="center")
+def _set_store():
+    # 위젯 상태는 그려지지 않은 실행에서 지워지므로, 원본은 일반 세션 키(store)에 둔다.
+    st.session_state.store = st.session_state.store_widget
+
+
+def _toggle_agent():
+    st.session_state.agent_open = not st.session_state.agent_open
+
+
+def render_header(leaf_id: str, leaf_title: str, agent_mode: str, open_drawer, show_agent: bool):
+    ss = st.session_state
+    left, right = st.columns([5, 5], vertical_alignment="center")
     with left:
-        st.title(page.title, icon=page.icon)
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.title(leaf_title, icon=icon_of(leaf_id), width="content")
+            fav = leaf_id in ss.favorites
+            st.button(":material/star:", key="fav_toggle", type="primary" if fav else "tertiary",
+                      help="즐겨찾기 해제" if fav else "즐겨찾기에 추가", on_click=toggle_favorite, args=(leaf_id,))
+        st.caption(" › ".join(breadcrumb(leaf_id)))
     with right:
         with st.container(horizontal=True, horizontal_alignment="right", vertical_alignment="center"):
-            if agent_mode == "dock":
-                open_ = st.session_state.agent_open
-                st.button("F&B Agent", icon=":material/smart_toy:", type="primary" if open_ else "secondary",
-                          on_click=_toggle_agent, help="에이전트 패널 열기/닫기")
-            elif st.button("F&B Agent", icon=":material/smart_toy:", type="primary",
-                           help="에이전트를 우측 서랍으로 엽니다"):
-                open_drawer()
+            st.selectbox("매장", STORES, index=STORES.index(ss.store), key="store_widget", on_change=_set_store,
+                         label_visibility="collapsed", width=140,
+                         help="매장을 바꾸면 매출·인력·재고 화면이 해당 매장 기준으로 바뀝니다.")
+            if show_agent:
+                if agent_mode == "dock":
+                    st.button("F&B Agent", icon=":material/smart_toy:", type="primary" if ss.agent_open else "secondary",
+                              on_click=_toggle_agent, help="에이전트 패널 열기/닫기")
+                elif st.button("F&B Agent", icon=":material/smart_toy:", type="primary", help="에이전트를 우측 서랍으로 엽니다"):
+                    open_drawer()
             user = current_user()
             if user:
                 with st.popover(user["name"], icon=":material/account_circle:"):
                     st.caption(user["email"] or "데모 사용자")
-                    st.button("로그아웃", icon=":material/logout:", on_click=_logout, width="stretch")
+                    st.button("로그아웃", icon=":material/logout:", on_click=logout, width="stretch")
             else:
                 if st.button("로그인", icon=":material/login:", type="tertiary"):
-                    _open_auth("login")
+                    open_auth("login")
                 if st.button("회원가입", type="secondary"):
-                    _open_auth("signup")
+                    open_auth("signup")
