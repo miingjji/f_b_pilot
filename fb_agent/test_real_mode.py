@@ -1,4 +1,5 @@
 """FB_MASTER=real 로 앱을 띄웠을 때의 동작 검증. 환경변수는 import 시점에 정해지므로 별도 프로세스에서 실행한다."""
+import testenv  # noqa: F401  (FB_MASTER=sample 고정)
 import json
 import os
 import subprocess
@@ -112,6 +113,32 @@ class RealMode(unittest.TestCase):
     def test_calendar_groups_busy_days(self):
         self.assertGreater(self.r["grouped_events"], 0)
         self.assertLessEqual(self.r["max_events_per_day"], 15)                  # 묶기 전에는 하루 35건
+
+
+class ModeSelection(unittest.TestCase):
+    """FB_MASTER 가 없으면 data/real 이 있을 때만 실제 모드, 값이 있으면 그대로 따른다."""
+
+    @staticmethod
+    def mode(**env) -> str:
+        base = {k: v for k, v in os.environ.items() if k != "FB_MASTER"}
+        p = subprocess.run([sys.executable, "-c", "import config; print(config.MASTER_MODE)"], capture_output=True, text=True,
+                           env={**base, **env}, cwd=ROOT, timeout=120)
+        return p.stdout.strip()
+
+    @unittest.skipUnless(HAS_REAL, "data/real 이 없으면 건너뜀")
+    def test_auto_picks_real_when_data_exists(self):
+        self.assertEqual(self.mode(), "real")
+
+    def test_explicit_sample_always_wins(self):
+        self.assertEqual(self.mode(FB_MASTER="sample"), "sample")
+
+    def test_auto_falls_back_to_sample_without_real_data(self):
+        # data/real 이 없는 저장소를 흉내: config 가 보는 경로를 존재하지 않는 곳으로 바꿔 확인
+        code = ("import config, pathlib; config.REAL_ITEMS = pathlib.Path('/nonexistent/items.csv'); "
+                "print(config._mode())")
+        base = {k: v for k, v in os.environ.items() if k != "FB_MASTER"}
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=base, cwd=ROOT, timeout=120)
+        self.assertEqual(p.stdout.strip(), "sample")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@
 서버를 직접 띄웠다 종료한다. 설치/환경은 e2e/README.md 참고.
 """
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -87,7 +88,7 @@ def main():
 
     srv = subprocess.Popen([sys.executable, "-m", "streamlit", "run", "app.py", "--server.headless", "true",
                             "--server.port", str(a.port), "--browser.gatherUsageStats", "false"],
-                           cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                           cwd=ROOT, env={**os.environ, "FB_MASTER": "sample"}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         wait_server(a.port)
         with sync_playwright() as p:

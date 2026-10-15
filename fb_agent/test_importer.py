@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (FB_MASTER=sample 고정)
 import io
 import unittest
 

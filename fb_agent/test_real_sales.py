@@ -1,4 +1,5 @@
 """FB_MASTER=real 에서 매출 화면이 실제 매출(수원점 2025-12)을 쓰는지 검증. 환경변수는 import 시점에 정해지므로 별도 프로세스에서 실행한다."""
+import testenv  # noqa: F401  (FB_MASTER=sample 고정)
 import json
 import os
 import subprocess
