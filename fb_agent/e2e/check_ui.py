@@ -60,10 +60,10 @@ def leaf_button(page, title: str):
 
 
 def day_grid_buttons(page):
-    """달력 격자의 날짜 버튼 (이름이 숫자인 버튼)."""
+    """달력 격자의 날짜 버튼 (이름이 숫자인 버튼, 오늘은 '15 오늘')."""
     out = []
     for n in range(1, 32):
-        loc = page.get_by_role("button", name=str(n), exact=True)
+        loc = page.get_by_role("button", name=re.compile(rf"^{n}(\s+오늘)?$"))
         if loc.count():
             bb = loc.first.bounding_box()
             if bb:
@@ -221,9 +221,11 @@ def main():
             pg, errs = open_app(br, url, 1440, 900, wait="text=달력 대시보드")
             check(pg.get_by_role("heading", name="F&B Agent").count() == 0, "1440px: 에이전트는 서랍 모드")
             check(len({round(x) for _, x, _ in day_grid_buttons(pg)}) == 7, "1440px: 달력 7열 표시")
-            rows = sorted({round(y) for _, _, y in day_grid_buttons(pg)})
-            gaps = [b - a_ for a_, b in zip(rows, rows[1:])]
-            check(len(set(gaps)) > 1, f"주마다 행 높이가 다름 (간격 {gaps})")
+            check(len({round(y) for _, _, y in day_grid_buttons(pg)}) == 1, "기본은 이번 주 한 줄만 표시")
+            check(all(pg.get_by_text(t).count() >= 1 for t in ("입고 품목", "발주 품목", "매장 이슈")), "하단 3칸: 입고 / 발주 / 매장 이슈 패널")
+            pg.get_by_role("button", name="달력 확대하기").click()
+            pg.wait_for_timeout(2500)
+            check(len({round(y) for _, _, y in day_grid_buttons(pg)}) >= 4, "'달력 확대하기'를 누르면 한 달 전체가 보임")
             pg.get_by_role("button", name="F&B Agent").first.click()
             pg.wait_for_timeout(1500)
             pg.get_by_text("지금 발주해야 할 품목은?").first.click()

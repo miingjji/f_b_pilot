@@ -39,6 +39,16 @@ out["settle_net"] = int(sd.settlement(st, end, 31)["순매출"].sum())
 out["cancel_types"] = sorted(sd.cancellations(st, end)["유형"].unique())
 # 실제 데이터 밖 날짜와 다른 매장은 가상 값이지만 비어 있지 않아야 함
 out["virtual_ok"] = all(int(sd.day_sales(s, date(2026, 3, 3))["sales"]) > 0 for s in ("수원점", "강남점", "홍대점"))
+d26 = sd.daily_sales(st, date(2026, 10, 15), 300)
+d26 = d26[d26["date"] >= "2026-01-01"]
+wk = d26.groupby(d26["date"].dt.weekday)["sales"].mean()
+out["sat_over_mon"] = float(wk[5] / wk[0])
+out["real_sat_over_mon"] = float(sd.daily_sales(st, end, 31).groupby(lambda i: date(2025, 12, 1 + i).weekday())["sales"].median()[5]
+                                  / sd.daily_sales(st, end, 31).groupby(lambda i: date(2025, 12, 1 + i).weekday())["sales"].median()[0])
+out["days_2026"] = int(len(d26)); out["min_2026"] = int(d26["sales"].min())
+out["holiday_lift"] = float(sd.day_sales(st, date(2026, 2, 17))["sales"] / sd.day_sales(st, date(2026, 2, 10))["sales"])   # 설날(화) vs 평소 화요일
+out["deterministic"] = sd.day_sales(st, date(2026, 5, 5)) == sd.day_sales(st, date(2026, 5, 5))
+out["hours_2026_total"] = int(sd.hourly_sales(st, date(2026, 3, 3))["sales"].sum()); out["day_2026"] = int(sd.day_sales(st, date(2026, 3, 3))["sales"])
 out["virtual_menu_names"] = list(sd.menu_series("강남점", date(2026, 3, 3), "day", 3).columns)[:2]
 
 SCRIPT = '''
@@ -94,6 +104,17 @@ class RealSales(unittest.TestCase):
     def test_outside_real_period_is_virtual_with_real_menu_mix(self):
         self.assertTrue(self.r["virtual_ok"])
         self.assertNotIn("짜장면", self.r["virtual_menu_names"])
+
+    def test_2026_is_filled_with_weekday_pattern_of_the_real_month(self):
+        self.assertGreaterEqual(self.r["days_2026"], 200)
+        self.assertGreater(self.r["min_2026"], 0)
+        self.assertGreater(self.r["sat_over_mon"], 2)                                     # 토요일이 월요일보다 훨씬 큼 (실제 12월도 같은 패턴)
+        self.assertGreater(self.r["real_sat_over_mon"], 2)
+        self.assertGreater(self.r["holiday_lift"], 1.0)                                  # 설날이 평소 같은 요일보다 큼
+        self.assertTrue(self.r["deterministic"])
+
+    def test_virtual_hours_add_up_to_the_virtual_day(self):
+        self.assertAlmostEqual(self.r["hours_2026_total"], self.r["day_2026"], delta=self.r["day_2026"] * 0.01)
 
     def test_all_sales_screens_render(self):
         self.assertGreaterEqual(self.r["leaves"], 20)

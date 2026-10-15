@@ -1,6 +1,7 @@
 import streamlit as st
 
 import routing
+import style
 from agent_context import build_context
 from agent_panel import agent_dock, agent_drawer
 from auth_ui import render_header
@@ -11,6 +12,7 @@ from viewport import mount_probe
 
 st.set_page_config(page_title="F&B Pilot", page_icon=":material/storefront:", layout="wide")
 st.logo("assets/logo.svg", size="large")
+style.inject()
 init_state()
 
 pages = build_pages()

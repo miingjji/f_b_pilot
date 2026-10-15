@@ -43,7 +43,7 @@ def store(leaf: Leaf):
             default=sorted(ss.cfg_closed_dates), format_func=_fmt)
 
         picked = st.date_input("기준일 (시뮬레이션용)", value=ss.cfg_today or default_today(),
-                               help=("기본값은 실제 데이터의 마지막 날(2025-12-31)입니다." if MASTER_MODE == "real" else "기본값은 오늘입니다.") +" 다른 날짜로 바꾸면 발주·일정 계산의 기준일이 바뀝니다.")
+                               help="기본값은 오늘입니다. 다른 날짜로 바꾸면 발주·일정 계산의 기준일이 바뀝니다.")
         ss.cfg_today = None if picked == default_today() else picked
 
 

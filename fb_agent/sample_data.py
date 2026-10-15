@@ -66,6 +66,42 @@ def _real_mix() -> tuple[list, list]:
     return menus, [(n, float(p[n] / p.sum())) for n in rs.PAY_NAMES]
 
 
+# 실제 데이터가 없는 날(2025-12 밖, 다른 매장)의 가상 매출: 실제 12월의 요일별 중앙값 × 월별 계절 × 공휴일 × 매장 규모 × 날짜별 잡음.
+HOLIDAYS = {date(2026, 1, 1), date(2026, 2, 16), date(2026, 2, 17), date(2026, 2, 18), date(2026, 3, 1), date(2026, 3, 2),
+            date(2026, 5, 5), date(2026, 5, 24), date(2026, 5, 25), date(2026, 6, 6), date(2026, 8, 15), date(2026, 8, 17),
+            date(2026, 9, 24), date(2026, 9, 25), date(2026, 9, 26), date(2026, 10, 3), date(2026, 10, 5), date(2026, 10, 9),
+            date(2025, 12, 25), date(2026, 12, 25)}                       # 설날·삼일절·어린이날·석가탄신일·현충일·광복절·추석·개천절·한글날·성탄(대체휴일 포함)
+HOLIDAY_FACTOR = 1.15
+SEASON = {1: .92, 2: .90, 3: .95, 4: .97, 5: 1.0, 6: .95, 7: .93, 8: .93, 9: .97, 10: 1.0, 11: .97, 12: 1.0}   # 12월(실제) 대비
+REAL_STORE_SCALE = {"수원점": 1.0, "강남점": 1.1, "홍대점": 0.85}
+
+
+@lru_cache(maxsize=1)
+def _real_profile() -> dict:
+    """실제 12월에서 뽑은 요일별 (순매출, 객수) 중앙값과 평일/주말 시간대 비중. 성탄절은 특수일이라 제외."""
+    d = rs.daily()
+    d = d[[x != date(2025, 12, 25) for x in d.index]]
+    wd = pd.Series([x.weekday() for x in d.index], index=d.index)
+    sales = d["순매출"].groupby(wd).median()
+    cust = d["객수"].groupby(wd).median()
+    hours = {}
+    for kind, days in (("wk", [x for x in d.index if x.weekday() < 5]), ("we", [x for x in d.index if x.weekday() >= 5])):
+        tot = sum(rs.hourly(x, OPEN_HOURS)["sales"].to_numpy() for x in days).astype(float)
+        hours[kind] = tot / tot.sum()
+    return {"sales": sales.to_dict(), "customers": cust.to_dict(), "hours": hours}
+
+
+def _virtual_real_day(store: str, d: date) -> dict:
+    prof = _real_profile()
+    r = _rng(store, d.toordinal(), "real-virtual")
+    base = prof["sales"][d.weekday()] * REAL_STORE_SCALE.get(store, 1.0) * SEASON[d.month]
+    if d in HOLIDAYS:
+        base *= HOLIDAY_FACTOR
+    sales = base * r.uniform(0.9, 1.1)
+    ticket = prof["sales"][d.weekday()] / max(1, prof["customers"][d.weekday()]) * r.uniform(0.95, 1.05)
+    return {"date": d, "sales": int(round(sales, -3)), "customers": int(sales / ticket), "ticket": int(ticket)}
+
+
 def menus() -> list:
     return _real_mix()[0] if _real_mode() else MENUS
 
@@ -80,6 +116,8 @@ def day_sales(store: str, d: date) -> dict:
         row = rs.daily().loc[d]
         return {"date": d, "sales": int(row["순매출"]), "customers": int(row["객수"]),
                 "ticket": int(row["순매출"] / max(1, row["객수"]))}
+    if _real_mode():
+        return _virtual_real_day(store, d)
     r = _rng(store, d.toordinal())
     trend = 1 + 0.0004 * (d.toordinal() - date(2026, 1, 1).toordinal())
     sales = BASE_DAILY_SALES * _scale(store) * WEEKDAY_FACTOR[d.weekday()] * trend * r.uniform(0.9, 1.1)
@@ -110,7 +148,8 @@ def hourly_sales(store: str, d: date) -> pd.DataFrame:
         return rs.hourly(d, OPEN_HOURS)
     day = day_sales(store, d)
     r = _rng(store, d.toordinal(), "hour")
-    w = HOUR_PROFILE * r.uniform(0.85, 1.15, len(OPEN_HOURS))
+    base = _real_profile()["hours"]["we" if d.weekday() >= 5 else "wk"] if _real_mode() else HOUR_PROFILE
+    w = base * r.uniform(0.85, 1.15, len(OPEN_HOURS))
     w = w / w.sum()
     sales = (day["sales"] * w).round(-2)
     return pd.DataFrame({"hour": OPEN_HOURS, "sales": sales.astype(int),

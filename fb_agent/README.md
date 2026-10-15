@@ -28,7 +28,7 @@ streamlit run app.py
 ```
 
 기본은 샘플 마스터이고, `FB_MASTER=real`일 때만 실제 기반 마스터를 씁니다. 일소비량·발주 요일·리드타임·일부 재고는 가상 값이며
-매출 화면은 수원점 2025-12 실제 매출을 씁니다 (기준일 기본값 2025-12-31, 원본이 없는 날짜·매장은 가상). 출처는 `data/real/items.csv`의 `*_출처` 열에 있습니다 ([docs/DATA_CLEANING.md](docs/DATA_CLEANING.md)).
+매출 화면은 수원점 2025-12 실제 매출을 씁니다 (원본이 없는 날짜·매장은 실제 12월의 요일·시간대 패턴을 따른 가상 값, 기준일 기본값은 오늘). 출처는 `data/real/items.csv`의 `*_출처` 열에 있습니다 ([docs/DATA_CLEANING.md](docs/DATA_CLEANING.md)).
 
 CLI로 한 품목만 계산: `python main.py 짜사이 "1pk 300g"`
 
