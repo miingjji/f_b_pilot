@@ -21,7 +21,7 @@ def _stream(text: str):
         time.sleep(0.012)
 
 
-def render_chat(ctx: AgentContext, *, height: int, title: bool):
+def render_chat(ctx: AgentContext, *, height: int, title: bool, quick: list[str] | None = None):
     ss = st.session_state
     with st.container(horizontal=True, vertical_alignment="center"):
         if title:
@@ -48,7 +48,7 @@ def render_chat(ctx: AgentContext, *, height: int, title: bool):
             ss.messages.append({"role": "assistant", "content": reply})
     if not ss.messages:
         with suggest:
-            st.pills("추천 질문", QUICK_QUESTIONS, key="agent_quick", on_change=_queue_quick,
+            st.pills("추천 질문", quick or QUICK_QUESTIONS, key="agent_quick", on_change=_queue_quick,
                      label_visibility="collapsed")
 
 

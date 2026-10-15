@@ -6,18 +6,12 @@ F&B 매장 운영 도우미. 실사 재고로 발주 시점·수량을 추천하
 
 | 영역 | 내용 |
 |---|---|
-| 좌측 사이드바 | 대시보드 · 매출/재고 관리 · 매장 모니터링 · 설정 |
-| 중앙 | 월/일 달력 (직접 추가한 일정 + 재고 기반 발주·입고 + 매장 휴무) |
+| 좌측 | 아이콘 레일(홈·즐겨찾기·매출·구매/발주·인력/스케줄·설정/계정) + 서브 패널(메뉴 검색, 대/중/소 아코디언) |
+| 헤더 | 제목·즐겨찾기·브레드크럼, 매장 선택, F&B Agent, 로그인/회원가입 |
+| 중앙 | 요약 카드 + 월/일 달력 대시보드, 또는 선택한 소메뉴 화면 (매출분석, 발주·재고, 인력·스케줄 등 55개) |
 | 우측 | F&B Agent 챗봇. 창이 넓으면 고정 패널, 좁으면 버튼으로 여는 서랍 |
-| 우측 상단 | 로그인 / 회원가입 / 프로필 |
 
-스크린샷은 `docs/screenshots/` 참고.
-
-### 반응형 동작
-- 브라우저 폭을 작은 컴포넌트(`viewport.py`)가 측정해 Python에 알려줍니다.
-- **에이전트 패널**: 창 폭 1760px 이상이면 우측 고정, 미만이면 서랍. 설정 페이지에서 고정/서랍을 강제할 수 있습니다.
-- **달력 셀**: 폭에 맞춰 줄바꿈을 추정하고 주(행)마다 필요한 높이만 씁니다.
-- **좁은 창/휴대폰(700px 미만)**: 7열 격자 대신 일정이 있는 날만 보여주는 목록.
+레이아웃과 반응형 규칙은 [docs/LAYOUT.md](docs/LAYOUT.md), 스크린샷은 `docs/screenshots/` 참고.
 
 ## 실행
 
@@ -37,23 +31,28 @@ PDF·이미지는 지원하지 않습니다.
 ## 구조
 
 ```
-app.py               진입점: 사이드바 내비게이션 · 헤더 · 중앙/우측 배치
-app_pages/           대시보드 · 재고 · 모니터링(스켈레톤) · 설정
-calendar_data.py     일정 모델, 일정 합성, 달력 셀 크기 계산 (Streamlit 비의존)
+app.py               진입점: 숨긴 st.navigation(소메뉴 55개) · 사이드바 · 헤더 · 본문/에이전트 배치
+menu.py              메뉴 트리(레일→대→중→소), 검색(초성 포함), 브레드크럼 (Streamlit 비의존)
+nav_ui.py            레일 + 서브 패널 + 아코디언, st.Page 등록
+routing.py           소메뉴 id → 페이지 이동
+views/               소메뉴별 화면: home · sales · purchase · hr · ai · settings
+sample_data.py       매출·근태 샘플 데이터 생성 (매장·날짜별 고정 시드)
+calendar_data.py     일정 모델, 일정 합성, 달력 셀 크기 계산
+insights.py          재고 요약 + 이상징후 판정
 reorder.py           발주 추천 로직
 converter.py         BOX/PK/EA/g 단위 환산 · 입력 파싱
 importer.py          재고 파일 파서
-agent.py             F&B Agent 응답 (규칙 기반)
-agent_panel.py       채팅 UI (고정 패널 / 서랍 공용)
+agent.py             F&B Agent 응답 (규칙 기반)  ·  agent_context.py 현재 매장 컨텍스트
+agent_panel.py       채팅 UI (고정 패널 / 서랍 / Q&A 화면 공용)
 viewport.py          브라우저 폭 측정 컴포넌트
 auth_ui.py           헤더 · 로그인 UI
-state.py             세션 공통 상태
+state.py             세션 상태 (매장별 재고 포함)
 ```
 
 ## 테스트
 
 ```bash
-python -m unittest        # 단위 테스트 (Streamlit 비의존 로직 + AppTest)
+python -m unittest        # 단위 테스트: 메뉴 구조, 샘플 데이터, 소메뉴 55개 렌더링 등 (AppTest 포함)
 python e2e/check_ui.py    # 실제 브라우저 점검 (e2e/README.md 참고)
 ```
 
@@ -61,4 +60,5 @@ python e2e/check_ui.py    # 실제 브라우저 점검 (e2e/README.md 참고)
 - **F&B Agent는 LLM이 아닙니다.** 앱 데이터에 키워드로 답하는 규칙 기반이며, LLM을 붙일 때는 `agent.answer()`만 교체하면 됩니다.
 - **로그인은 데모입니다.** 이름·이메일만 받고 비밀번호는 받지 않습니다. `.streamlit/secrets.toml`에 `[auth]`(OIDC)를 설정하면 `st.login()`으로 자동 전환됩니다.
 - **일정은 세션에만 저장됩니다.** 새로고침하면 샘플 일정으로 돌아갑니다.
-- 매장 모니터링 페이지는 스켈레톤입니다.
+- **매출·근태 화면은 샘플 데이터**입니다(화면에 표시). POS/근태 연동 전까지 `sample_data.py`가 채웁니다.
+- 이동 중 위젯 상태 문제 등 설계 배경은 `docs/LAYOUT.md`에 정리했습니다.
