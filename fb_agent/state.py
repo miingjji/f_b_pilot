@@ -4,29 +4,49 @@ from datetime import date, timedelta
 import streamlit as st
 
 from calendar_data import sample_events
-from data import DEFAULT_CALENDAR
+from config import default_today
+from data import DEFAULT_CALENDAR, ITEMS
 from insights import build_table, recommendations, sample_stock_g, stock_from_table
 from menu import STORES
 from models import StoreCalendar
 from viewport import is_mobile, viewport
 
 
+DEMO_NAMES = ("짜사이", "단무지", "청양고추")      # 샘플 마스터의 데모 품목
+
+
+def demo_items(items: dict) -> list:
+    """시드 발주서·입고에 쓸 품목 최대 3개. 샘플 마스터는 원래 데모 품목, 그 외에는 소비가 있는 품목을 업체가 겹치지 않게."""
+    if all(n in items for n in DEMO_NAMES):
+        return [items[n] for n in DEMO_NAMES]
+    pool = [it for it in items.values() if it.daily_usage_g > 0] or list(items.values())
+    picked, seen = [], set()
+    for it in pool:
+        if it.supplier.name not in seen:
+            picked.append(it)
+            seen.add(it.supplier.name)
+        if len(picked) == 3:
+            break
+    for it in pool:                                        # 업체가 모자라면 같은 업체에서 채움
+        if len(picked) >= 3:
+            break
+        if it not in picked:
+            picked.append(it)
+    return picked
+
+
 def _seed_purchase_orders(today: date) -> list[dict]:
-    return [
-        {"발주번호": "PO-0001", "거래처": "A식자재", "품목": "짜사이", "수량(PK)": 6,
-         "발주일": today - timedelta(days=2), "입고예정": today + timedelta(days=1), "상태": "입고대기"},
-        {"발주번호": "PO-0002", "거래처": "B유통", "품목": "단무지", "수량(PK)": 4,
-         "발주일": today - timedelta(days=1), "입고예정": today + timedelta(days=2), "상태": "입고대기"},
-        {"발주번호": "PO-0003", "거래처": "C농산", "품목": "청양고추", "수량(PK)": 8,
-         "발주일": today - timedelta(days=6), "입고예정": today - timedelta(days=3), "상태": "입고완료"},
-    ]
+    spec = [("입고대기", 6, -2, 1), ("입고대기", 4, -1, 2), ("입고완료", 8, -6, -3)]       # (상태, 수량, 발주일 오프셋, 입고예정 오프셋)
+    return [{"발주번호": f"PO-{i:04d}", "거래처": it.supplier.name, "품목": it.name, "수량(PK)": qty,
+             "발주일": today + timedelta(days=o), "입고예정": today + timedelta(days=a), "상태": status}
+            for i, (it, (status, qty, o, a)) in enumerate(zip(demo_items(ITEMS), spec), start=1)]
 
 
 def init_state():
     ss = st.session_state
     if "initialized" in ss:
         return
-    today = date.today()
+    today = default_today()
     ss.initialized = True
     ss.user = None                      # 데모 로그인 사용자
     ss.store = STORES[0]                # 선택된 매장
@@ -45,8 +65,9 @@ def init_state():
     # 구매·입출고·인력 업무 데이터 (세션 동안만 유지)
     ss.purchase_requests = []
     ss.purchase_orders = _seed_purchase_orders(today)
-    ss.receipts = [{"입고일": today - timedelta(days=3), "거래처": "C농산", "품목": "청양고추", "수량(PK)": 8,
-                    "구분": "구매발주서", "비고": "PO-0003"}]
+    done = [p for p in ss.purchase_orders if p["상태"] == "입고완료"]
+    ss.receipts = [{"입고일": p["입고예정"], "거래처": p["거래처"], "품목": p["품목"], "수량(PK)": p["수량(PK)"],
+                    "구분": "구매발주서", "비고": p["발주번호"]} for p in done]
     ss.returns, ss.losses, ss.transfers, ss.transfer_requests = [], [], [], []
     ss.shift_requests = []
     ss.inv_history = []
@@ -73,7 +94,7 @@ def inv_state() -> dict:
 
 
 def get_today() -> date:
-    return st.session_state.cfg_today or date.today()
+    return st.session_state.cfg_today or default_today()
 
 
 def get_calendar() -> StoreCalendar:

@@ -2,12 +2,14 @@ import unittest
 from datetime import date, timedelta
 
 from agent import AgentContext, answer
-from calendar_data import (Event, build_events, cell_width, chars_per_line, derived_events, max_cell_events,
+TOPIC_BASE_ORDER = ["지금 발주해야 할 품목은?", "재고 현황 요약", "발주 입고 일정 알려줘"]
+from calendar_data import (GROUP_LIMIT, Event, build_events, cell_width, chars_per_line, derived_events, max_cell_events,
                            new_event, row_height, sample_events, visible_events)
 from data import DEFAULT_CALENDAR, ITEMS
 from errors import InvalidInputError
 from insights import recommendations, sample_stock_g
 from models import StoreCalendar
+from reorder import Recommendation
 
 THU = date(2026, 10, 15)  # 목요일
 CAL = DEFAULT_CALENDAR    # 일요일 휴무
@@ -47,6 +49,51 @@ class Events(unittest.TestCase):
         s = sample_events(THU)
         self.assertTrue(all(e.sample and e.deletable for e in s))
         self.assertEqual(len({e.id for e in s}), len(s))
+
+
+def rec(item, supplier, order, arrival, status="URGENT", packs=2):
+    return Recommendation(item, supplier, status, 1.0, order, order, arrival, packs, 0, "메시지")
+
+
+class GroupedOrderEvents(unittest.TestCase):
+    """품목이 수백 개여도 달력이 읽히도록 같은 업체·같은 날짜의 발주/입고는 한 줄로 묶는다."""
+
+    def orders(self, recs):
+        return [e for e in derived_events(recs, CAL, THU, THU + timedelta(days=10)) if e.category == "order"]
+
+    def test_small_groups_stay_per_item(self):
+        recs = [rec(f"품목{i}", "A사", THU, THU + timedelta(days=1)) for i in range(GROUP_LIMIT)]
+        ev = self.orders(recs)
+        self.assertEqual(len(ev), 2 * GROUP_LIMIT)                                 # 발주 + 입고
+        self.assertTrue(any(e.title == "발주 품목0 2PK" for e in ev))
+
+    def test_large_group_becomes_one_event_per_kind(self):
+        recs = [rec(f"품목{i}", "CK", THU, THU + timedelta(days=1)) for i in range(GROUP_LIMIT + 3)]
+        ev = self.orders(recs)
+        self.assertEqual(sorted(e.title for e in ev), [f"발주 CK {GROUP_LIMIT + 3}개 품목", f"입고 CK {GROUP_LIMIT + 3}개 품목"])
+        detail = next(e for e in ev if e.title.startswith("발주")).detail
+        self.assertIn("품목0", detail)
+        self.assertIn("외 1개", detail)                                              # 5개까지 이름을 보이고 나머지는 개수로
+        self.assertFalse(any(e.deletable for e in ev))
+
+    def test_groups_are_per_supplier_and_per_date(self):
+        recs = [rec(f"가{i}", "CK", THU, THU + timedelta(days=1)) for i in range(5)]
+        recs += [rec(f"나{i}", "B사", THU, THU + timedelta(days=1)) for i in range(2)]                 # 다른 업체는 따로
+        recs += [rec("다", "CK", THU + timedelta(days=2), THU + timedelta(days=3))]                    # 같은 업체라도 날짜가 다르면 따로
+        titles = sorted(e.title for e in self.orders(recs))
+        self.assertIn("발주 CK 5개 품목", titles)
+        self.assertIn("발주 나0 2PK", titles)
+        self.assertIn("발주 다 2PK", titles)
+
+    def test_non_actionable_items_are_ignored(self):
+        recs = [rec(f"품목{i}", "CK", THU, THU + timedelta(days=1), status="OK") for i in range(10)]
+        self.assertEqual(self.orders(recs), [])
+
+    def test_sample_data_behaviour_is_unchanged(self):
+        recs = recommendations(sample_stock_g(), THU, CAL)
+        ev = [e for e in derived_events(recs, CAL, THU, THU + timedelta(days=30)) if e.category == "order"]
+        actionable = [r for r in recs if r.status in ("URGENT", "ORDER_NOW", "ORDER_SOON")]
+        self.assertEqual(len(ev), 2 * len([r for r in actionable if r.order_date and r.arrival_date]))
 
 
 class CellLayout(unittest.TestCase):
@@ -113,6 +160,40 @@ class AgentAnswers(unittest.TestCase):
         self.assertIn("10/18", answer("휴무일 언제야", self.ctx()))
         self.assertIn("답변할 수 없는", answer("메뉴 추천해줘", AgentContext(THU)))
         self.assertEqual(answer("  ", self.ctx()), "질문을 입력해 주세요.")
+
+    def many(self, n):
+        recs = [Recommendation(f"품목{i:02d}", "CK", "URGENT", float(i), THU, THU, THU + timedelta(days=1), 1, 0, "m") for i in range(n)]
+        return AgentContext(THU, recs, {})
+
+    def test_long_order_list_is_capped_with_total_count(self):
+        a = answer("지금 발주해야 할 품목은?", self.many(30))
+        self.assertIn("30개", a)
+        self.assertEqual(a.count("\n- **"), 8)                                      # 상위 8개만 나열
+        self.assertIn("외 22개", a)
+        self.assertIn("자동 발주 추천", a)                                            # 전체를 볼 곳 안내
+        short = answer("지금 발주해야 할 품목은?", self.many(3))
+        self.assertEqual(short.count("\n- **"), 3)
+        self.assertNotIn("외 ", short)
+
+    def test_stock_summary_shows_counts_and_the_most_urgent(self):
+        ctx = self.many(30)
+        ctx.recs += [Recommendation(f"여유{i}", "CK", "OK", 90.0, THU, None, None, 0, 0, "m") for i in range(5)]
+        ctx.recs += [Recommendation(f"무소비{i}", "CK", "NO_USAGE", None, None, None, None, 0, 0, "m") for i in range(7)]
+        a = answer("재고 현황 요약", ctx)
+        self.assertIn("전체 42개", a)
+        for part in ("긴급 30", "양호 5", "소비 없음 7"):
+            self.assertIn(part, a)
+        self.assertEqual(a.count("\n- **"), 8)
+        self.assertIn("품목00", a)                                                   # 잔여일이 가장 짧은 품목부터
+
+    def test_topic_hint_uses_a_real_item(self):
+        from agent import topic_questions
+        from models import Item, Supplier
+        s = Supplier("T", frozenset({0}), 1)
+        items = {"가": Item("가", 1, 0, s), "나": Item("나", 1, 5, s)}
+        q = topic_questions(items)
+        self.assertIn("나 리드타임은?", q["리드타임 조회"])                              # 소비가 있는 첫 품목
+        self.assertEqual(q["발주 추천"], TOPIC_BASE_ORDER)
 
     def test_stock_without_data(self):
         self.assertIn("재고 정보가 없어요", answer("재고 현황", AgentContext(THU)))

@@ -8,7 +8,7 @@ import sample_data as sd
 from menu import Leaf
 from state import get_store, get_today
 from views import register
-from views.common import date_range, iso, kpis, num_cols, pct_delta, sample_notice, won
+from views.common import date_range, iso, kpis, num_cols, pct_delta, sales_notice, won
 
 DOW_KR = "월화수목금토일"
 
@@ -16,7 +16,7 @@ DOW_KR = "월화수목금토일"
 # ---------------- 매출요약 ----------------
 @register("sales.monthly")
 def monthly(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     m = sd.monthly_sales(get_store(), get_today(), 12)
     cur, prev = m.iloc[-1], m.iloc[-2]
     kpis([(f"{cur['month']} 매출", won(cur["sales"]), pct_delta(cur["sales"], prev["sales"]) + " 전월 대비"),
@@ -32,7 +32,7 @@ def monthly(leaf: Leaf):
 
 @register("sales.daily")
 def daily(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     start, end = date_range("기간", 30, "sales_daily_range")
     df = sd.daily_sales(get_store(), end, (end - start).days + 1)
     best = df.loc[df["sales"].idxmax()]
@@ -47,7 +47,7 @@ def daily(leaf: Leaf):
 
 @register("sales.weekday")
 def weekday(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     df = sd.daily_sales(get_store(), get_today(), 90)
     g = df.groupby(df["date"].dt.weekday).agg(매출=("sales", "mean"), 객수=("customers", "mean")).round(0)
     g.index = [f"{DOW_KR[i]}요일" for i in g.index]
@@ -61,7 +61,7 @@ def weekday(leaf: Leaf):
 
 @register("sales.hourly")
 def hourly(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     d = st.date_input("일자", value=get_today(), max_value=get_today(), key="sales_hourly_day")
     h = sd.hourly_sales(get_store(), d)
     peak = h.loc[h["sales"].idxmax()]
@@ -74,7 +74,7 @@ def hourly(leaf: Leaf):
 
 @register("sales.realtime")
 def realtime(leaf: Leaf):
-    sample_notice("POS 실시간")
+    sales_notice("POS 실시간")
     today = get_today()
     now_h = min(max(pd.Timestamp.now().hour, sd.OPEN_HOURS[0]), sd.OPEN_HOURS[-1])
     t, w = sd.hourly_sales(get_store(), today), sd.hourly_sales(get_store(), today - timedelta(days=7))
@@ -90,7 +90,7 @@ def realtime(leaf: Leaf):
 
 @register("sales.ticket")
 def ticket(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     df = sd.daily_sales(get_store(), get_today(), 30)
     kpis([("평균 객단가", won(df["ticket"].mean()), None), ("평균 회전율", f"{df['turnover'].mean():.2f}회", f"좌석 {sd.SEATS}석 기준")])
     c1, c2 = st.columns(2)
@@ -102,7 +102,7 @@ def ticket(leaf: Leaf):
 
 @register("sales.cumulative")
 def cumulative(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     today = get_today()
     first = today.replace(day=1)
     df = sd.daily_sales(get_store(), today, (today - first).days + 1)
@@ -119,7 +119,7 @@ def cumulative(leaf: Leaf):
 
 @register("sales.compare")
 def compare(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     today = get_today()
     preset = st.segmented_control("비교", ["이번 주 vs 지난 주", "이번 달 vs 지난 달"], default="이번 주 vs 지난 주",
                                   key="cmp_preset") or "이번 주 vs 지난 주"
@@ -142,7 +142,7 @@ def compare(leaf: Leaf):
 
 @register("sales.customers")
 def customers(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     start, end = date_range("기간", 30, "sales_cust_range")
     df = sd.daily_sales(get_store(), end, (end - start).days + 1)
     kpis([("총 객수", f"{int(df['customers'].sum()):,}명", None), ("일평균", f"{df['customers'].mean():.0f}명", None)])
@@ -152,18 +152,19 @@ def customers(leaf: Leaf):
 # ---------------- 메뉴매출분석 ----------------
 @register("menu.status")
 def menu_status(leaf: Leaf):
-    sample_notice()
+    sales_notice()
     start, end = date_range("기간", 30, "menu_range")
     t = sd.menu_table(get_store(), start, end)
     kpis([("메뉴 매출 합계", won(t["매출"].sum()), None), ("1위 메뉴", t.iloc[0]["메뉴"], f"{t.iloc[0]['비중(%)']}%")])
-    st.bar_chart(t, x="메뉴", y="매출", horizontal=True, alt="메뉴별 매출")
+    st.bar_chart(t[t["메뉴"] != "기타"], x="메뉴", y="매출", horizontal=True, sort="-매출",
+                 alt="메뉴별 매출 (기타 제외)")        # '기타'(나머지 메뉴 묶음)는 막대가 너무 길어 표에서만 보여 준다
     st.dataframe(t, hide_index=True, width="stretch", alt="메뉴별 판매현황",
                  column_config={**num_cols("단가", "판매수량", "매출"),
                                 "비중(%)": st.column_config.ProgressColumn("비중(%)", min_value=0, max_value=40, format="%.1f")})
 
 
 def _menu_series(by: str, n: int, label: str, key: str):
-    sample_notice()
+    sales_notice()
     df = sd.menu_series(get_store(), get_today(), by, n)
     picked = st.pills("메뉴", list(df.columns), selection_mode="multi", default=list(df.columns), key=key) or list(df.columns)
     st.bar_chart(df[picked], y_label="매출(원)", alt=f"메뉴별 {label} 매출")
@@ -189,7 +190,7 @@ def menu_hourly(leaf: Leaf):
 # ---------------- 결제수단분석 ----------------
 @register("pay.method")
 def pay_method(leaf: Leaf):
-    sample_notice("결제")
+    sales_notice("결제")
     method = leaf.arg
     start, end = date_range("기간", 30, "pay_range")
     share = sd.payment_share(get_store(), start, end)
@@ -208,7 +209,7 @@ def pay_method(leaf: Leaf):
 # ---------------- 매출취소분석 ----------------
 @register("cancel.table")
 def cancel_table(leaf: Leaf):
-    sample_notice("POS 취소내역")
+    sales_notice("POS 취소내역")
     types = leaf.arg.split(",")
     df = sd.cancellations(get_store(), get_today())
     df = df[df["유형"].isin(types)]
@@ -225,10 +226,10 @@ def cancel_table(leaf: Leaf):
 # ---------------- 매출정산 ----------------
 @register("settle.receipts")
 def settle_receipts(leaf: Leaf):
-    sample_notice("POS 영수증")
+    sales_notice("POS 영수증")
     d = st.date_input("일자", value=get_today(), max_value=get_today(), key="rcpt_day")
     df = sd.receipts(get_store(), d)
-    pays = st.pills("결제수단", [p[0] for p in sd.PAYMENTS], selection_mode="multi", key="rcpt_pay") or []
+    pays = st.pills("결제수단", [p[0] for p in sd.payments()], selection_mode="multi", key="rcpt_pay") or []
     view = df[df["결제수단"].isin(pays)] if pays else df
     kpis([("영수증", f"{len(view)}건", None), ("합계", won(view["금액"].sum()), None)])
     st.dataframe(view, hide_index=True, width="stretch", alt="매출 영수증 목록", column_config=num_cols("금액"))
@@ -236,7 +237,7 @@ def settle_receipts(leaf: Leaf):
 
 @register("settle.detail")
 def settle_detail(leaf: Leaf):
-    sample_notice("POS 영수증")
+    sales_notice("POS 영수증")
     d = st.date_input("일자", value=get_today(), max_value=get_today(), key="rcpt_d_day")
     df = sd.receipts(get_store(), d)
     no = st.selectbox("영수증", df["영수증번호"], format_func=lambda n: f"{n} · {df[df['영수증번호'] == n].iloc[0]['시각']}")
@@ -248,7 +249,7 @@ def settle_detail(leaf: Leaf):
 
 @register("settle.report")
 def settle_report(leaf: Leaf):
-    sample_notice("정산")
+    sales_notice("정산")
     df = sd.settlement(get_store(), get_today(), 7)
     kpis([("7일 순매출", won(df["순매출"].sum()), None), ("할인 합계", won(df["할인"].sum()), None),
           ("부가세 합계", won(df["부가세"].sum()), None)])
@@ -260,7 +261,7 @@ def settle_report(leaf: Leaf):
 
 @register("settle.pnc")
 def settle_pnc(leaf: Leaf):
-    sample_notice("정산")
+    sales_notice("정산")
     st.caption("결제채널별 정산 (PNC 양식 확정 전 임시 구성: 채널별 순매출·수수료·입금예정액)")
     df = sd.settlement_by_channel(get_store(), get_today())
     kpis([("입금예정액 합계", won(df["입금예정액"].sum()), None), ("수수료 합계", won(df["수수료"].sum()), None)])
@@ -270,7 +271,7 @@ def settle_pnc(leaf: Leaf):
 
 @register("settle.salmon")
 def settle_salmon(leaf: Leaf):
-    sample_notice("입고")
+    sales_notice("입고")
     df = sd.salmon_receiving(get_store(), get_today())
     kpis([("입고량", f"{df['수량(kg)'].sum():.1f}kg", None), ("입고 금액", won(df["금액"].sum()), None),
           ("재검 건수", f"{(df['검수'] == '재검').sum()}건", None)])

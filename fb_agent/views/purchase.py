@@ -81,11 +81,23 @@ def rec_card(item, g, r, *, request_button=False):
 
 
 # ---------------- 발주관리 ----------------
-def add_request(item: str, packs: float, want: date | None, memo: str):
+def add_request(item: str, packs: float, want: date | None, memo: str, toast: bool = True):
     ss.purchase_requests = [*ss.purchase_requests, {
         "청구번호": f"PR-{len(ss.purchase_requests) + 1:04d}", "청구일": get_today(), "품목": item,
         "거래처": ITEMS[item].supplier.name, "수량(PK)": packs, "희망입고일": want, "메모": memo, "상태": "청구"}]
-    st.toast(f"구매청구를 만들었어요: {item} {packs}PK", icon=":material/check_circle:")
+    if toast:
+        st.toast(f"구매청구를 만들었어요: {item} {packs}PK", icon=":material/check_circle:")
+
+
+def add_requests_bulk(todo):
+    """우선 처리 품목 전체를 한 번에 구매청구로 (이미 청구한 품목은 건너뜀)."""
+    pending = {r["품목"] for r in ss.purchase_requests if r["상태"] == "청구"}
+    made = 0
+    for it, _g, r in todo:
+        if it.name not in pending:
+            add_request(it.name, r.order_packs, r.arrival_date, "자동 발주 추천", toast=False)
+            made += 1
+    st.toast(f"구매청구 {made}건을 만들었어요 (이미 청구한 {len(todo) - made}건은 건너뜀).", icon=":material/check_circle:")
 
 
 def convert_to_po(req_no: str):
@@ -167,12 +179,14 @@ def po_auto(leaf: Leaf):
     todo = [(it, g, r) for it, g, r in results if r.status in ACTION]
     if not todo:
         st.success("지금 발주할 품목이 없습니다.", icon=":material/check_circle:")
+    if todo:
+        st.button(f"위 {len(todo)}개 전체 구매청구 만들기", icon=":material/add_shopping_cart:", on_click=add_requests_bulk, args=(todo,),
+                  help="우선 처리 품목을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다.")
     for it, g, r in todo[:MAX_CARDS]:
         rec_card(it, g, r, request_button=True)
     if len(todo) > MAX_CARDS:
-        with st.expander(f"나머지 {len(todo) - MAX_CARDS}개 보기"):
-            for it, g, r in todo[MAX_CARDS:]:
-                rec_card(it, g, r, request_button=True)
+        st.caption(f"급한 순서로 {MAX_CARDS}개만 카드로 보여줘요. 나머지 {len(todo) - MAX_CARDS}개는 아래 '전체 품목 현황' 표에서 확인하세요 "
+                   "(상태 순으로 정렬돼 있어요).")
 
     st.subheader("전체 품목 현황")
     df = pd.DataFrame([{

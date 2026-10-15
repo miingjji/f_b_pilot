@@ -7,7 +7,7 @@ from data import DEFAULT_CALENDAR
 from insights import Alert, build_alerts, recommendations, sample_stock_g
 
 D = date(2026, 10, 15)
-STORES = list(sd.STORE_SCALE)
+STORES = ["강남점", "홍대점", "판교점"]       # 샘플 매장 (수원점은 실제 모드용 규모만 추가됨)
 
 
 class Determinism(unittest.TestCase):

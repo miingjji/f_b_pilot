@@ -56,17 +56,29 @@ def sample_events(today: date) -> list[Event]:
     ]
 
 
+GROUP_LIMIT = 3          # 같은 업체·같은 날짜의 발주(입고)가 이 개수를 넘으면 한 줄로 묶음 (품목이 수백 개여도 달력이 읽히도록)
+GROUP_NAMES = 5          # 묶은 일정의 상세에 이름을 보여줄 품목 수
+
+
 def derived_events(recs: list[Recommendation], cal: StoreCalendar, start: date, end: date) -> list[Event]:
-    """재고 추천(발주/입고)과 매장 휴무를 일정으로 변환."""
-    out = []
+    """재고 추천(발주/입고)과 매장 휴무를 일정으로 변환. 같은 업체·같은 날짜의 일정이 많으면 한 줄로 묶는다."""
+    groups: dict[tuple, list[Recommendation]] = {}
     for r in recs:
         if r.status not in ORDER_STATUSES:
             continue
         if r.order_date:
-            out.append(Event(r.order_date, f"발주 {r.item} {r.order_packs}PK", "order",
-                             f"{r.supplier} · {r.message}"))
+            groups.setdefault(("발주", r.order_date, r.supplier), []).append(r)
         if r.arrival_date:
-            out.append(Event(r.arrival_date, f"입고 {r.item}", "order", f"{r.supplier} 입고 예정"))
+            groups.setdefault(("입고", r.arrival_date, r.supplier), []).append(r)
+    out = []
+    for (kind, day, supplier), rs in groups.items():
+        if len(rs) <= GROUP_LIMIT:
+            for r in rs:
+                out.append(Event(day, f"발주 {r.item} {r.order_packs}PK", "order", f"{r.supplier} · {r.message}") if kind == "발주"
+                           else Event(day, f"입고 {r.item}", "order", f"{r.supplier} 입고 예정"))
+        else:
+            names = ", ".join(r.item for r in rs[:GROUP_NAMES]) + (f" 외 {len(rs) - GROUP_NAMES}개" if len(rs) > GROUP_NAMES else "")
+            out.append(Event(day, f"{kind} {supplier} {len(rs)}개 품목", "order", f"{supplier} · {names}"))
     d = start
     while d <= end:
         if not cal.is_open(d):
