@@ -21,6 +21,7 @@ source .e2e-env/env.sh
 ```bash
 python e2e/check_ui.py            # 서버를 직접 띄우고 점검 후 종료
 python e2e/check_ui.py --out /tmp/shots --port 8800
+python e2e/check_real.py          # FB_MASTER=real 서버로 실제 기반 마스터 점검 (재고·발주·매출 화면, 스크린샷 docs/screenshots/real_*.png)
 ```
 
 ## 점검 항목

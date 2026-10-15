@@ -5,6 +5,8 @@
 """
 from dataclasses import dataclass
 
+from config import STORES  # noqa: F401  (매장 목록은 마스터 종류에 따라 config 에서 정함)
+
 FAV_RAIL = "fav"
 
 
@@ -137,7 +139,6 @@ RAILS = (
 )
 
 DEFAULT_LEAF = "home-dashboard"
-STORES = ("강남점", "홍대점", "판교점")
 
 
 # ---- 조회용 색인 ----

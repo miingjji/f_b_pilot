@@ -10,7 +10,10 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-STORE_SCALE = {"강남점": 1.0, "홍대점": 0.8, "판교점": 1.2}
+import config
+import real_sales as rs
+
+STORE_SCALE = {"강남점": 1.0, "홍대점": 0.8, "판교점": 1.2, "수원점": 1.2}
 WEEKDAY_FACTOR = [0.85, 0.9, 0.95, 1.0, 1.15, 1.35, 1.25]          # 월~일
 OPEN_HOURS = list(range(11, 22))                                    # 11시~21시
 HOUR_PROFILE = np.array([.08, .16, .14, .06, .04, .04, .07, .14, .15, .08, .04])
@@ -39,8 +42,44 @@ def _scale(store: str) -> float:
     return STORE_SCALE.get(store, 1.0)
 
 
+# ---- 실제 매출 연결 (FB_MASTER=real) ----
+# 수원점의 실제 매출이 있는 날(2025-12)은 real_sales 의 값을, 그 밖의 날짜·매장은 아래 가상 규칙을 쓴다.
+# 가상 값의 메뉴·결제 구성비는 실제 12월 구성비를 따라 한 화면에서 어색하지 않게 한다.
+def _real_mode() -> bool:
+    return config.MASTER_MODE == "real" and rs.available()
+
+
+def _real(store: str, d: date | None = None) -> bool:
+    return _real_mode() and store == rs.REAL_STORE and (d is None or rs.has(d))
+
+
+@lru_cache(maxsize=1)
+def _real_mix() -> tuple[list, list]:
+    """실제 12월 매출의 (메뉴 [(이름, 평균단가, 비중)], 결제 [(이름, 비중)])."""
+    s = rs.sales_rows()
+    label = rs._menu_label(s)
+    g = s.groupby(label).agg(수량=("수량", "sum"), 매출=("순매출", "sum"))
+    order = [*rs.menu_names(), "기타"]
+    g = g.reindex(order).fillna(0)
+    menus = [(n, max(1, int(g.loc[n, "매출"] / max(1, g.loc[n, "수량"]))), float(g.loc[n, "매출"] / g["매출"].sum())) for n in order]
+    p = s.groupby("결제")["순매출"].sum().reindex(rs.PAY_NAMES, fill_value=0)
+    return menus, [(n, float(p[n] / p.sum())) for n in rs.PAY_NAMES]
+
+
+def menus() -> list:
+    return _real_mix()[0] if _real_mode() else MENUS
+
+
+def payments() -> list:
+    return _real_mix()[1] if _real_mode() else PAYMENTS
+
+
 def day_sales(store: str, d: date) -> dict:
     """하루 매출·객수."""
+    if _real(store, d):
+        row = rs.daily().loc[d]
+        return {"date": d, "sales": int(row["순매출"]), "customers": int(row["객수"]),
+                "ticket": int(row["순매출"] / max(1, row["객수"]))}
     r = _rng(store, d.toordinal())
     trend = 1 + 0.0004 * (d.toordinal() - date(2026, 1, 1).toordinal())
     sales = BASE_DAILY_SALES * _scale(store) * WEEKDAY_FACTOR[d.weekday()] * trend * r.uniform(0.9, 1.1)
@@ -67,6 +106,8 @@ def monthly_sales(store: str, end: date, months: int = 12) -> pd.DataFrame:
 
 def hourly_sales(store: str, d: date) -> pd.DataFrame:
     """시간대별 매출·객수."""
+    if _real(store, d):
+        return rs.hourly(d, OPEN_HOURS)
     day = day_sales(store, d)
     r = _rng(store, d.toordinal(), "hour")
     w = HOUR_PROFILE * r.uniform(0.85, 1.15, len(OPEN_HOURS))
@@ -78,6 +119,14 @@ def hourly_sales(store: str, d: date) -> pd.DataFrame:
 
 def menu_table(store: str, start: date, end: date) -> pd.DataFrame:
     """기간 내 메뉴별 판매수량·매출·비중."""
+    if _real_mode():
+        days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+        t = sum((_menu_day(store, d) for d in days), _menu_day(store, days[0]) * 0)
+        df = pd.DataFrame({"메뉴": t.index, "단가": [p for _n, p, _s in menus()],
+                           "판매수량": t["수량"].astype(int).values, "매출": t["매출"].astype(int).values})
+        df["비중(%)"] = (df["매출"] / max(1, df["매출"].sum()) * 100).round(1)
+        df = pd.concat([df[df["메뉴"] != "기타"].sort_values("매출", ascending=False), df[df["메뉴"] == "기타"]])   # '기타'는 마지막
+        return df.reset_index(drop=True)
     total = int(daily_sales(store, end, (end - start).days + 1)["sales"].sum())
     rows = []
     for name, price, share in MENUS:
@@ -91,6 +140,8 @@ def menu_table(store: str, start: date, end: date) -> pd.DataFrame:
 
 def menu_series(store: str, end: date, by: str, n: int) -> pd.DataFrame:
     """메뉴별 시계열(wide). by: 'day' | 'month' | 'hour'."""
+    if _real_mode():
+        return _real_menu_series(store, end, by, n)
     cols = [m[0] for m in MENUS]
     if by == "hour":
         h = hourly_sales(store, end)
@@ -105,7 +156,64 @@ def menu_series(store: str, end: date, by: str, n: int) -> pd.DataFrame:
     return pd.DataFrame(data).set_index(mth["month"])
 
 
+@lru_cache(maxsize=4096)
+def _menu_day(store: str, d: date) -> pd.DataFrame:
+    """그날 메뉴별 수량·매출 (실제 날은 실제 값, 아니면 실제 구성비로 나눈 가상 값)."""
+    names = [m[0] for m in menus()]
+    if _real(store, d):
+        return rs.menu_day(d).reindex(names, fill_value=0)
+    sales = day_sales(store, d)["sales"]
+    r = _rng(store, d.toordinal(), "menu").uniform(0.9, 1.1, len(names))
+    amt = np.array([sales * share for _n, _p, share in menus()]) * r
+    qty = amt / np.array([p for _n, p, _s in menus()])
+    return pd.DataFrame({"수량": qty.round(), "매출": amt.round(-2)}, index=names)
+
+
+def _real_menu_series(store: str, end: date, by: str, n: int) -> pd.DataFrame:
+    names = [m[0] for m in menus()]
+    if by == "hour":
+        if _real(store, end):
+            p = rs.menu_hour(end, OPEN_HOURS).reindex(columns=names, fill_value=0)
+            return p.set_index(p.index.astype(str) + "시")
+        h = hourly_sales(store, end)
+        return pd.DataFrame({m: (h["sales"] * s).round(-2) for m, _p, s in menus()}).set_index(h["hour"].astype(str) + "시")
+    if by == "day":
+        days = [end - timedelta(days=i) for i in range(n - 1, -1, -1)]
+        out = pd.DataFrame({d.strftime("%m-%d"): _menu_day(store, d)["매출"] for d in days}).T
+        return out[names]
+    mth = monthly_sales(store, end, n)
+    rows = {}
+    for m in mth["month"]:
+        y, mo = int(m[:4]), int(m[5:])
+        last = min(end, (date(y + (mo == 12), mo % 12 + 1, 1) - timedelta(days=1)))
+        total = sum((_menu_day(store, date(y, mo, k))["매출"] for k in range(1, last.day + 1)), _menu_day(store, date(y, mo, 1))["매출"] * 0)
+        rows[m] = total
+    return pd.DataFrame(rows).T[names]
+
+
+@lru_cache(maxsize=4096)
+def _pay_day(store: str, d: date) -> dict:
+    """그날 결제수단별 금액 (실제 날은 실제 값, 아니면 실제 구성비로 나눈 가상 값)."""
+    if _real(store, d):
+        return rs.pay_amounts(d)
+    sales = day_sales(store, d)["sales"]
+    r = _rng(store, d.toordinal(), "pay").uniform(0.95, 1.05, len(payments()))
+    return {n: int(sales * share * x) for (n, share), x in zip(payments(), r)}
+
+
+def _pay_totals(store: str, start: date, end: date) -> dict:
+    out = {n: 0 for n, _s in payments()}
+    for i in range((end - start).days + 1):
+        for n, v in _pay_day(store, start + timedelta(days=i)).items():
+            out[n] += v
+    return out
+
+
 def payment_share(store: str, start: date, end: date) -> pd.DataFrame:
+    if _real_mode():
+        df = pd.DataFrame({"결제수단": [n for n, _s in payments()], "금액": list(_pay_totals(store, start, end).values())})
+        df["비중(%)"] = (df["금액"] / max(1, df["금액"].sum()) * 100).round(1)
+        return df
     total = int(daily_sales(store, end, (end - start).days + 1)["sales"].sum())
     rows = []
     for name, share in PAYMENTS:
@@ -118,6 +226,10 @@ def payment_share(store: str, start: date, end: date) -> pd.DataFrame:
 
 
 def payment_daily(store: str, end: date, method: str, days: int = 30) -> pd.DataFrame:
+    if _real_mode():
+        idx = pd.to_datetime([end - timedelta(days=i) for i in range(days - 1, -1, -1)])
+        vals = [_pay_day(store, x.date()).get(method, 0) for x in idx]
+        return pd.DataFrame({"일자": idx, "금액": vals}).set_index("일자")
     share = dict(PAYMENTS)[method]
     d = daily_sales(store, end, days)
     r = _rng(store, method, "daily").uniform(0.9, 1.1, len(d))
@@ -138,26 +250,40 @@ def cancellations(store: str, end: date, n: int = 40) -> pd.DataFrame:
                      "유형": str(r.choice(CANCEL_TYPES, p=[.3, .15, .3, .25])),
                      "금액": int(r.integers(2, 60)) * 1000, "사유": str(r.choice(CANCEL_REASONS)),
                      "처리자": STAFF[int(r.integers(0, len(STAFF)))][0]})
-    return pd.DataFrame(rows).sort_values("일시", ascending=False).reset_index(drop=True)
+    df = pd.DataFrame(rows)
+    if _real(store):
+        lo = end - timedelta(days=29)
+        df = df[~df["일시"].str[:10].map(lambda x: rs.has(date.fromisoformat(x)))]       # 실제 날짜는 아래 실제 행으로 대체
+        real = rs.cancellations(lo, end)
+        if len(real):
+            rr = _rng(store, end.toordinal(), "cancel-meta")                           # 원본에 없는 사유·처리자는 가상
+            real = real.assign(사유=[str(rr.choice(CANCEL_REASONS)) for _ in range(len(real))],
+                               처리자=[STAFF[int(rr.integers(0, len(STAFF)))][0] for _ in range(len(real))])
+            df = pd.concat([df, real[df.columns]], ignore_index=True)
+    return df.sort_values("일시", ascending=False).reset_index(drop=True)
 
 
 def receipts(store: str, d: date, n: int = 30) -> pd.DataFrame:
+    if _real(store, d):
+        return rs.receipts(d)
     r = _rng(store, d.toordinal(), "receipt")
     rows = []
     for i in range(n):
         items = r.integers(1, 5)
-        amount = int(sum(MENUS[int(r.integers(0, len(MENUS)))][1] * int(r.integers(1, 3)) for _ in range(items)))
+        amount = int(sum(menus()[int(r.integers(0, len(menus())))][1] * int(r.integers(1, 3)) for _ in range(items)))
         rows.append({"영수증번호": f"R{d:%m%d}{1000 + i}", "시각": f"{int(r.choice(OPEN_HOURS)):02d}:{int(r.integers(0, 60)):02d}",
                      "테이블": f"T{int(r.integers(1, 21))}", "금액": amount,
-                     "결제수단": str(r.choice([p[0] for p in PAYMENTS], p=[p[1] for p in PAYMENTS]))})
+                     "결제수단": str(r.choice([p[0] for p in payments()], p=[p[1] for p in payments()]))})
     return pd.DataFrame(rows).sort_values("시각").reset_index(drop=True)
 
 
 def receipt_lines(store: str, d: date, receipt_no: str) -> pd.DataFrame:
+    if _real(store, d):
+        return rs.receipt_lines(d, receipt_no)
     r = _rng(store, d.toordinal(), receipt_no)
     rows = []
     for _ in range(int(r.integers(1, 5))):
-        name, price, _s = MENUS[int(r.integers(0, len(MENUS)))]
+        name, price, _s = menus()[int(r.integers(0, len(menus())))]
         qty = int(r.integers(1, 3))
         rows.append({"메뉴": name, "단가": price, "수량": qty, "금액": price * qty})
     return pd.DataFrame(rows)
@@ -169,15 +295,22 @@ def settlement(store: str, end: date, days: int = 7) -> pd.DataFrame:
     r = _rng(store, end.toordinal(), "settle")
     disc = (d["sales"] * r.uniform(0.01, 0.03, len(d))).round(-2).astype(int)
     net = d["sales"] - disc
-    return pd.DataFrame({"일자": d["date"].dt.strftime("%Y-%m-%d"), "총매출": d["sales"], "할인": disc,
-                         "순매출": net, "부가세": (net / 11).round(-1).astype(int)})
+    out = pd.DataFrame({"일자": d["date"].dt.strftime("%Y-%m-%d"), "총매출": d["sales"], "할인": disc,
+                        "순매출": net, "부가세": (net / 11).round(-1).astype(int)})
+    if _real(store):
+        real = rs.daily()
+        for i, day in enumerate(d["date"].dt.date):
+            if day in real.index:
+                out.loc[out.index[i], ["총매출", "할인", "순매출", "부가세"]] = [int(real.loc[day, c]) for c in ("총매출", "할인", "순매출", "부가세")]
+    return out
 
 
 def settlement_by_channel(store: str, end: date) -> pd.DataFrame:
     s = settlement(store, end, 7)
+    pay = _pay_totals(store, end - timedelta(days=6), end) if _real_mode() else None
     rows = []
-    for name, share in PAYMENTS:
-        net = int(s["순매출"].sum() * share)
+    for name, share in payments():
+        net = int(pay[name] if pay else s["순매출"].sum() * share)
         fee = {"신용카드": .015, "간편결제": .02, "현금": 0.0, "상품권·기타": .03}[name]
         rows.append({"결제채널": name, "순매출": net, "수수료율(%)": fee * 100, "수수료": int(net * fee),
                      "입금예정액": net - int(net * fee)})

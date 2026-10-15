@@ -3,12 +3,24 @@ from datetime import date, timedelta
 
 import streamlit as st
 
+import real_sales
+import sample_data as sd
 from state import get_store, get_today
 
 
 def sample_notice(what: str = "POS"):
     st.caption(f":material/science: 샘플 데이터입니다 — {what} 연동 전 화면 구성용이며, "
                f"'{get_store()}' 기준으로 값이 달라집니다.")
+
+
+def sales_notice(what: str = "POS"):
+    """매출 화면 안내: 실제 모드의 수원점은 실제 매출 기간을, 그 밖은 샘플 안내를 보여 준다."""
+    if sd._real(get_store()):
+        a, b = real_sales.span()
+        st.caption(f":material/database: 수원점 {a:%Y-%m-%d}~{b:%m-%d} 실제 매출입니다. 이 기간 밖의 날짜는 실제 구성비를 따른 "
+                   "가상 값이고, 취소 사유·처리자와 결제수단 중 간편결제(원본에 구분 없음)는 가상·미구분입니다.")
+    else:
+        sample_notice(what)
 
 
 def won(n) -> str:

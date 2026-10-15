@@ -5,7 +5,8 @@ import pandas as pd
 import streamlit as st
 
 from auth_ui import current_user, logout, open_auth
-from data import ITEMS, SUPPLIERS
+from config import MASTER_MODE, default_today
+from data import DATASET_LABEL, ITEMS, SUPPLIERS
 from master import item_rows, to_json
 from menu import Leaf
 from models import WEEKDAY_KR
@@ -41,14 +42,18 @@ def store(leaf: Leaf):
             "등록된 임시 휴무일 (선택 해제하면 삭제)", options=sorted(ss.cfg_closed_dates),
             default=sorted(ss.cfg_closed_dates), format_func=_fmt)
 
-        picked = st.date_input("기준일 (시뮬레이션용)", value=ss.cfg_today or date.today(),
-                               help="기본값은 오늘입니다. 다른 날짜로 바꾸면 발주·일정 계산의 기준일이 바뀝니다.")
-        ss.cfg_today = None if picked == date.today() else picked
+        picked = st.date_input("기준일 (시뮬레이션용)", value=ss.cfg_today or default_today(),
+                               help=("기본값은 실제 데이터의 마지막 날(2025-12-31)입니다." if MASTER_MODE == "real" else "기본값은 오늘입니다.") +" 다른 날짜로 바꾸면 발주·일정 계산의 기준일이 바뀝니다.")
+        ss.cfg_today = None if picked == default_today() else picked
 
 
 @register("set.items")
 def items(leaf: Leaf):
-    st.caption("품목 마스터입니다. 원본은 `data/items.csv`(거래처는 `data/suppliers.csv`)이며, 엑셀에서 편집한 뒤 앱을 다시 시작하면 반영돼요.")
+    src = "data/real" if MASTER_MODE == "real" else "data"
+    st.caption(f"품목 마스터입니다 ({DATASET_LABEL}). 원본은 `{src}/items.csv`(거래처는 `{src}/suppliers.csv`)이며, 엑셀에서 편집한 뒤 앱을 다시 시작하면 반영돼요.")
+    if MASTER_MODE == "real":
+        st.info("일 소비량·재고·리드타임·발주 요일의 **가상 값**은 `data/real/items.csv`의 출처 열(일소비량_출처, 재고_출처, 리드타임_출처)로 구분할 수 있어요.",
+                icon=":material/science:")
     rows = pd.DataFrame(item_rows(ITEMS.values()))
     c1, c2, c3 = st.columns(3)
     major = c1.pills("대분류", ["전체", *dict.fromkeys(rows["대분류"])], default="전체", key="mst_major") or "전체"

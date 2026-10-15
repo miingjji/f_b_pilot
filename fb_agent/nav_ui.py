@@ -7,6 +7,7 @@ import streamlit as st
 
 import routing
 import views
+from data import DATASET_LABEL
 from viewport import is_mobile
 from menu import (DEFAULT_LEAF, FAV_RAIL, RAILS, Leaf, all_leaves, breadcrumb, get_leaf, has_leaf, icon_of, rail_by_id,
                   rail_of, search)
@@ -106,3 +107,5 @@ def render_sidebar(current_id: str):
                 _rail_buttons(active)
             with panel_col:
                 _panel_body(active, current_id)
+        st.divider()
+        st.caption(f":material/database: {DATASET_LABEL}")

@@ -21,6 +21,15 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+실제 매장 데이터 기반 마스터(품목 903개·거래처 45곳)로 실행하려면 (원본 마크다운이 `data/f_b_menu_data.md`에 있어야 함):
+
+```bash
+./run_real.sh            # data/real/ 이 없으면 python -m prep.app_master 로 만든 뒤 FB_MASTER=real 로 실행
+```
+
+기본은 샘플 마스터이고, `FB_MASTER=real`일 때만 실제 기반 마스터를 씁니다. 일소비량·발주 요일·리드타임·일부 재고는 가상 값이며
+매출 화면은 수원점 2025-12 실제 매출을 씁니다 (기준일 기본값 2025-12-31, 원본이 없는 날짜·매장은 가상). 출처는 `data/real/items.csv`의 `*_출처` 열에 있습니다 ([docs/DATA_CLEANING.md](docs/DATA_CLEANING.md)).
+
 CLI로 한 품목만 계산: `python main.py 짜사이 "1pk 300g"`
 
 ## 품목 마스터
