@@ -38,11 +38,14 @@ def daily(leaf: Leaf):
     best = df.loc[df["sales"].idxmax()]
     kpis([("기간 매출", won(df["sales"].sum()), None), ("일평균", won(df["sales"].mean()), None),
           ("최고 매출일", f"{best['date']:%m-%d}", won(best["sales"]))])
-    st.line_chart(iso(df), x="date", y="sales", x_label="일자", y_label="매출(원)", alt="일자별 매출 추이")
-    st.dataframe(df.assign(일자=df["date"].dt.strftime("%Y-%m-%d"))[["일자", "sales", "customers", "ticket"]]
-                 .rename(columns={"sales": "매출", "customers": "객수", "ticket": "객단가"})
-                 .sort_values("일자", ascending=False), hide_index=True, width="stretch", alt="일자별 매출표",
-                 column_config=num_cols("매출", "객수", "객단가"))
+    chart_tab, table_tab = st.tabs([":material/show_chart: 추이", ":material/table: 표"])
+    with chart_tab:
+        st.line_chart(iso(df), x="date", y="sales", x_label="일자", y_label="매출(원)", alt="일자별 매출 추이")
+    with table_tab:
+        st.dataframe(df.assign(일자=df["date"].dt.strftime("%Y-%m-%d"))[["일자", "sales", "customers", "ticket"]]
+                     .rename(columns={"sales": "매출", "customers": "객수", "ticket": "객단가"})
+                     .sort_values("일자", ascending=False), hide_index=True, width="stretch", alt="일자별 매출표",
+                     column_config=num_cols("매출", "객수", "객단가"))
 
 
 @register("sales.weekday")
@@ -66,10 +69,13 @@ def hourly(leaf: Leaf):
     h = sd.hourly_sales(get_store(), d)
     peak = h.loc[h["sales"].idxmax()]
     kpis([("일 매출", won(h["sales"].sum()), None), ("피크 시간", f"{int(peak['hour'])}시", won(peak["sales"]))])
-    st.bar_chart(h.assign(시간=h["hour"].astype(str) + "시"), x="시간", y="sales", y_label="매출(원)",
-                 alt="시간대별 매출")
-    st.dataframe(h.rename(columns={"hour": "시", "sales": "매출", "customers": "객수"}), hide_index=True,
-                 width="stretch", alt="시간대별 매출표", column_config=num_cols("매출", "객수"))
+    chart_tab, table_tab = st.tabs([":material/bar_chart: 시간대 차트", ":material/table: 표"])
+    with chart_tab:
+        st.bar_chart(h.assign(시간=h["hour"].astype(str) + "시"), x="시간", y="sales", y_label="매출(원)",
+                     alt="시간대별 매출")
+    with table_tab:
+        st.dataframe(h.rename(columns={"hour": "시", "sales": "매출", "customers": "객수"}), hide_index=True,
+                     width="stretch", alt="시간대별 매출표", column_config=num_cols("매출", "객수"))
 
 
 @register("sales.realtime")
@@ -156,11 +162,14 @@ def menu_status(leaf: Leaf):
     start, end = date_range("기간", 30, "menu_range")
     t = sd.menu_table(get_store(), start, end)
     kpis([("메뉴 매출 합계", won(t["매출"].sum()), None), ("1위 메뉴", t.iloc[0]["메뉴"], f"{t.iloc[0]['비중(%)']}%")])
-    st.bar_chart(t[t["메뉴"] != "기타"], x="메뉴", y="매출", horizontal=True, sort="-매출",
-                 alt="메뉴별 매출 (기타 제외)")        # '기타'(나머지 메뉴 묶음)는 막대가 너무 길어 표에서만 보여 준다
-    st.dataframe(t, hide_index=True, width="stretch", alt="메뉴별 판매현황",
-                 column_config={**num_cols("단가", "판매수량", "매출"),
-                                "비중(%)": st.column_config.ProgressColumn("비중(%)", min_value=0, max_value=40, format="%.1f")})
+    chart_tab, table_tab = st.tabs([":material/bar_chart: 메뉴별 매출", ":material/table: 판매현황표"])
+    with chart_tab:
+        st.bar_chart(t[t["메뉴"] != "기타"], x="메뉴", y="매출", horizontal=True, sort="-매출",
+                     alt="메뉴별 매출 (기타 제외)")        # '기타'(나머지 메뉴 묶음)는 막대가 너무 길어 표에서만 보여 준다
+    with table_tab:
+        st.dataframe(t, hide_index=True, width="stretch", alt="메뉴별 판매현황",
+                     column_config={**num_cols("단가", "판매수량", "매출"),
+                                    "비중(%)": st.column_config.ProgressColumn("비중(%)", min_value=0, max_value=40, format="%.1f")})
 
 
 def _menu_series(by: str, n: int, label: str, key: str):

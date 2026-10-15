@@ -66,9 +66,9 @@ def _panel(rail_id: str, current_id: str):
         return
     for major in rail.majors:
         has_current = any(lf.id == current_id for mid in major.mids for lf in mid.leaves)
-        with st.expander(f"**{major.title}**", expanded=has_current or len(rail.majors) == 1):
+        with st.expander(f"**{major.title}**", icon=rail.icon, expanded=has_current or len(rail.majors) == 1):
             for mid in major.mids:
-                with st.expander(mid.title, expanded=any(lf.id == current_id for lf in mid.leaves)):
+                with st.expander(mid.title, icon=":material/folder_open:", expanded=any(lf.id == current_id for lf in mid.leaves)):
                     for leaf in mid.leaves:
                         _leaf_button(leaf, current_id, "nav")
 
