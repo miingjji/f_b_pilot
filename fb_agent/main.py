@@ -12,7 +12,7 @@ def show(name, g):
     box, pk, loose = to_boxes(item, g)
     r = recommend(item, g, cal=DEFAULT_CALENDAR)
     left = "-" if r.days_left is None else f"{r.days_left:.1f}일"
-    print(f"[{name}] 재고 {g:,.0f}g = {box}BOX {pk}PK {loose:,.0f}g | 잔여 {left} | "
+    print(f"[{name}] 재고 {item.fmt(g)} = {box}BOX {pk}PK {item.fmt(loose)} | 잔여 {left} | "
           f"{r.status} | 발주 {fmt_date(r.order_date)} -> 입고 {fmt_date(r.arrival_date)} "
           f"{r.order_packs}PK ({r.supplier}) | {r.message}")
 

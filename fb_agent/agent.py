@@ -71,11 +71,11 @@ def answer(prompt: str, ctx: AgentContext) -> str:
 
     if _has(q, "리드타임", "배송", "거래처", "납기"):
         from data import ITEMS, SUPPLIERS
-        for name, it in ITEMS.items():                  # 품목명이 들어 있으면 그 품목만
-            if name in q:
-                s_ = it.supplier
-                return (f"**{name}** 는 {s_.name}에서 발주 가능 요일은 {s_.order_days_label}이고, "
-                        f"리드타임은 D+{s_.lead_time_days}입니다.")
+        hits = [n for n, it in ITEMS.items() if n in q or it.code.lower() in q.lower()]
+        if hits:                                         # 품목명(또는 코드)이 들어 있으면 그 품목만, 이름이 긴 쪽 우선
+            it = ITEMS[max(hits, key=len)]
+            return (f"**{it.name}** 는 {it.supplier.name}에서 발주 가능 요일은 {it.supplier.order_days_label}이고, "
+                    f"리드타임은 D+{it.lead_time_days}입니다.")
         lines = [f"- **{s.name}** · 발주 {s.order_days_label} · D+{s.lead_time_days}" for s in SUPPLIERS.values()]
         return "거래처별 리드타임입니다.\n\n" + "\n".join(lines)
 

@@ -8,7 +8,7 @@ F&B 매장 운영 도우미. 실사 재고로 발주 시점·수량을 추천하
 |---|---|
 | 좌측 | 아이콘 레일(홈·즐겨찾기·매출·구매/발주·인력/스케줄·설정/계정) + 서브 패널(메뉴 검색, 대/중/소 아코디언) |
 | 헤더 | 제목·즐겨찾기·브레드크럼, 매장 선택, F&B Agent, 로그인/회원가입 |
-| 중앙 | 요약 카드 + 월/일 달력 대시보드, 또는 선택한 소메뉴 화면 (매출분석, 발주·재고, 인력·스케줄 등 55개) |
+| 중앙 | 요약 카드 + 월/일 달력 대시보드, 또는 선택한 소메뉴 화면 (매출분석, 발주·재고, 인력·스케줄 등 56개) |
 | 우측 | F&B Agent 챗봇. 창이 넓으면 고정 패널, 좁으면 버튼으로 여는 서랍 |
 
 레이아웃과 반응형 규칙은 [docs/LAYOUT.md](docs/LAYOUT.md), 스크린샷은 `docs/screenshots/` 참고.
@@ -23,6 +23,11 @@ streamlit run app.py
 
 CLI로 한 품목만 계산: `python main.py 짜사이 "1pk 300g"`
 
+## 품목 마스터
+
+품목은 `data/items.csv`, 거래처는 `data/suppliers.csv`에서 읽습니다 (설정/계정 › 품목 마스터 화면에서 조회·다운로드).
+필드와 편집 방법은 [docs/DATA.md](docs/DATA.md) 참고. 현재 28개 품목: 기존 식자재 4개 + 매장 소모품·위생용품 24개.
+
 ## 실사 재고 파일 업로드
 엑셀(xlsx/xls/ods) · CSV/TSV · JSON · 마크다운 표 · 줄 단위 메모(`짜사이 1pk 300g`)를 읽습니다.
 확장자가 아니라 내용으로 형식을 판별하고, 행별 오류를 보고합니다 (`importer.py`).
@@ -31,12 +36,14 @@ PDF·이미지는 지원하지 않습니다.
 ## 구조
 
 ```
-app.py               진입점: 숨긴 st.navigation(소메뉴 55개) · 사이드바 · 헤더 · 본문/에이전트 배치
+app.py               진입점: 숨긴 st.navigation(소메뉴 56개) · 사이드바 · 헤더 · 본문/에이전트 배치
 menu.py              메뉴 트리(레일→대→중→소), 검색(초성 포함), 브레드크럼 (Streamlit 비의존)
 nav_ui.py            레일 + 서브 패널 + 아코디언, st.Page 등록
 routing.py           소메뉴 id → 페이지 이동
 views/               소메뉴별 화면: home · sales · purchase · hr · ai · settings
 sample_data.py       매출·근태 샘플 데이터 생성 (매장·날짜별 고정 시드)
+master.py            품목·거래처 마스터 CSV 로더/검증/내보내기
+data/                items.csv(품목 마스터) · suppliers.csv(거래처) — 엑셀로 편집
 calendar_data.py     일정 모델, 일정 합성, 달력 셀 크기 계산
 insights.py          재고 요약 + 이상징후 판정
 reorder.py           발주 추천 로직
@@ -52,7 +59,7 @@ state.py             세션 상태 (매장별 재고 포함)
 ## 테스트
 
 ```bash
-python -m unittest        # 단위 테스트: 메뉴 구조, 샘플 데이터, 소메뉴 55개 렌더링 등 (AppTest 포함)
+python -m unittest        # 단위 테스트: 메뉴 구조, 샘플 데이터, 소메뉴 56개 렌더링 등 (AppTest 포함)
 python e2e/check_ui.py    # 실제 브라우저 점검 (e2e/README.md 참고)
 ```
 

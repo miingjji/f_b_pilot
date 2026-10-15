@@ -180,6 +180,43 @@ def main():
             pg.screenshot(path=out / "09_ai_chat.png")
             pg.context.close()
 
+            # 6-2) 품목 마스터 · 재고 입력 필터 · 소모품 발주 추천 · 품목별 리드타임
+            pg, errs = open_app(br, url, 1600, 1000, path="/set-items")
+            check(pg.get_by_text("28개 / 전체 28개").count() == 1, "품목 마스터: 전체 28개 표시")
+            check(pg.get_by_role("button", name="CSV 내려받기").count() == 1 and pg.get_by_role("button", name="JSON 내려받기").count() == 1,
+                  "품목 마스터: CSV/JSON 다운로드 버튼")
+            pg.locator('[data-testid="stButtonGroup"]').get_by_text("소모품", exact=True).click()
+            pg.wait_for_timeout(2000)
+            check(pg.get_by_text("24개 / 전체 28개").count() == 1, "품목 마스터: 대분류 '소모품' 필터 → 24개")
+            pg.screenshot(path=out / "14_item_master.png", full_page=True)
+            pg.context.close()
+
+            pg, errs = open_app(br, url, 1600, 1000, path="/stock-input")
+            check(pg.get_by_text("28개 표시 / 전체 28개").count() == 1, "재고 입력: 전체 28개 표시")
+            pg.locator('[data-testid="stButtonGroup"]').get_by_text("포장·용기", exact=True).click()
+            pg.wait_for_timeout(2000)
+            check(pg.get_by_text("10개 표시 / 전체 28개").count() == 1, "재고 입력: 분류 '포장·용기' → 10개")
+            pg.get_by_placeholder("품목명 또는 코드").fill("냅킨")
+            pg.keyboard.press("Enter")
+            pg.wait_for_timeout(2000)
+            check(pg.get_by_text("1개 표시 / 전체 28개").count() == 1, "재고 입력: 검색 '냅킨' → 1개")
+            pg.screenshot(path=out / "15_stock_input_filtered.png", full_page=True)
+            pg.context.close()
+
+            pg, errs = open_app(br, url, 1600, 1000, path="/po-auto")
+            check(pg.get_by_text("배달용 1회용 용기(소)").count() >= 1, "자동 발주 추천에 소모품(배달용 용기 소)이 나타남")
+            check(pg.get_by_text("375개").count() >= 1, "소모품 재고가 기본단위(개)로 표시됨")
+            pg.screenshot(path=out / "16_po_auto_supplies.png", full_page=True)
+            check(not errs, "발주 추천: JS 에러 없음")
+            pg.context.close()
+
+            pg, errs = open_app(br, url, 1600, 1000, path="/ai-chat-leadtime")
+            pg.get_by_placeholder("재고, 발주, 일정에 대해 물어보세요").fill("냅킨 리드타임은?")
+            pg.keyboard.press("Enter")
+            pg.wait_for_timeout(3500)
+            check(pg.get_by_text("D+3").count() >= 1 and pg.get_by_text("팩토리포장").count() >= 1, "에이전트: 품목별 리드타임 답변 (냅킨 → 팩토리포장 D+3)")
+            pg.context.close()
+
             # 7) 반응형
             pg, errs = open_app(br, url, 1440, 900, wait="text=달력 대시보드")
             check(pg.get_by_role("heading", name="F&B Agent").count() == 0, "1440px: 에이전트는 서랍 모드")

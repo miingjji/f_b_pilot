@@ -5,7 +5,8 @@ import pandas as pd
 import streamlit as st
 
 from auth_ui import current_user, logout, open_auth
-from data import SUPPLIERS
+from data import ITEMS, SUPPLIERS
+from master import item_rows, to_json
 from menu import Leaf
 from models import WEEKDAY_KR
 from state import get_store
@@ -43,6 +44,38 @@ def store(leaf: Leaf):
         picked = st.date_input("기준일 (시뮬레이션용)", value=ss.cfg_today or date.today(),
                                help="기본값은 오늘입니다. 다른 날짜로 바꾸면 발주·일정 계산의 기준일이 바뀝니다.")
         ss.cfg_today = None if picked == date.today() else picked
+
+
+@register("set.items")
+def items(leaf: Leaf):
+    st.caption("품목 마스터입니다. 원본은 `data/items.csv`(거래처는 `data/suppliers.csv`)이며, 엑셀에서 편집한 뒤 앱을 다시 시작하면 반영돼요.")
+    rows = pd.DataFrame(item_rows(ITEMS.values()))
+    c1, c2, c3 = st.columns(3)
+    major = c1.pills("대분류", ["전체", *dict.fromkeys(rows["대분류"])], default="전체", key="mst_major") or "전체"
+    mids = ["전체", *dict.fromkeys(rows[rows["대분류"] == major]["중분류"] if major != "전체" else rows["중분류"])]
+    mid = c2.selectbox("중분류", mids, key="mst_mid")
+    q = c3.text_input("검색", placeholder="품목명·코드·거래처", key="mst_q", icon=":material/search:").strip()
+    view = rows
+    if major != "전체":
+        view = view[view["대분류"] == major]
+    if mid != "전체":
+        view = view[view["중분류"] == mid]
+    if q:
+        hay = view["품목명"] + " " + view["품목코드"] + " " + view["거래처"]
+        view = view[hay.str.contains(q, case=False, regex=False)]
+
+    shown = view.assign(
+        안전재고량=[ITEMS[n].fmt(v) for n, v in zip(view["품목명"], view["안전재고량"])],
+        현재재고량=[ITEMS[n].fmt(v) for n, v in zip(view["품목명"], view["현재재고량"])],
+    ).drop(columns=["기본단위"])
+    st.dataframe(shown, hide_index=True, width="stretch", alt="품목 마스터",
+                 column_config={"리드타임(일)": st.column_config.NumberColumn(format="D+%d")})
+    st.caption(f"{len(view)}개 / 전체 {len(rows)}개 · 현재재고량은 시드(기본) 값이고, 매장별 실제 재고는 '매장별 재고입력'에서 관리해요.")
+    with st.container(horizontal=True):
+        st.download_button("CSV 내려받기", view.to_csv(index=False).encode("utf-8-sig"), "품목마스터.csv", "text/csv",
+                           icon=":material/download:")
+        st.download_button("JSON 내려받기", to_json(ITEMS[n] for n in view["품목명"]), "품목마스터.json", "application/json",
+                           icon=":material/data_object:")
 
 
 @register("set.suppliers")

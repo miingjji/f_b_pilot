@@ -7,9 +7,10 @@ from models import Item
 UNIT_ALIASES = {
     "g": "g", "gram": "g", "그램": "g", "그람": "g",
     "kg": "kg", "킬로": "kg", "킬로그램": "kg",
+    "ml": "ml", "밀리리터": "ml", "l": "l", "리터": "l",
     "pk": "PK", "pack": "PK", "팩": "PK", "봉": "PK", "봉지": "PK",
-    "box": "BOX", "bx": "BOX", "박스": "BOX", "상자": "BOX", "case": "BOX",
-    "ea": "EA", "개": "EA", "낱개": "EA",
+    "box": "BOX", "bx": "BOX", "박스": "BOX", "상자": "BOX", "case": "BOX", "ctn": "BOX", "카톤": "BOX",
+    "ea": "EA", "개": "EA", "낱개": "EA", "장": "EA", "매": "EA", "롤": "EA", "켤레": "EA",
 }
 
 
@@ -26,7 +27,7 @@ def _check(value, label):
 def normalize_unit(unit: str) -> str:
     key = str(unit).strip().lower()
     if key not in UNIT_ALIASES:
-        raise InvalidInputError(f"알 수 없는 단위: {unit!r} (지원: BOX, PK, EA, g, kg)")
+        raise InvalidInputError(f"알 수 없는 단위: {unit!r} (지원: BOX, PK, EA·개·장·롤, g, kg, ml, L)")
     return UNIT_ALIASES[key]
 
 
@@ -34,10 +35,11 @@ def unit_to_grams(item: Item, qty, unit: str) -> float:
     """수량 + 단위 -> g (품목별 BOX/PK/EA 무게 기준)."""
     q = _check(qty, f"{unit} 수량")
     u = normalize_unit(unit)
-    if u == "g":
-        return q
-    if u == "kg":
-        return q * 1000
+    if u in ("g", "kg", "ml", "l"):
+        need = "g" if u in ("g", "kg") else "ml"
+        if item.base_unit != need:   # 예: 우유(ml)에 kg, 냅킨(장)에 g 입력
+            raise InvalidInputError(f"{item.name}: '{unit}' 단위는 쓸 수 없어요 (기본단위 {item.base_unit})")
+        return q * (1000 if u in ("kg", "l") else 1)
     if u == "PK":
         return q * item.pk_weight_g
     if u == "BOX":
@@ -71,8 +73,9 @@ def parse_count(item: Item, text: str) -> float:
 
 
 def to_grams(item: Item, packs=0, loose_g=0, boxes=0) -> float:
-    """실사 입력(BOX + PK + 낱개 g) -> 총 g."""
-    return sum_to_grams(item, [(boxes, "BOX"), (packs, "PK"), (loose_g, "g")])
+    """실사 입력(BOX + PK + 낱개) -> 총 기본단위 수량. 낱개는 품목의 기본단위(g·ml·개 …)로 센다."""
+    return (_check(boxes, "BOX 수량") * item.box_weight_g + _check(packs, "PK 수량") * item.pk_weight_g
+            + _check(loose_g, "낱개 수량"))
 
 
 def to_packs(item: Item, grams) -> tuple[int, float, float]:

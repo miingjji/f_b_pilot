@@ -128,6 +128,7 @@ RAILS = (
     Rail("settings", ":material/settings:", "설정/계정", (
         Major("설정/계정", "Settings & Account", (
             _mid("매장", ("set-store", "매장 설정 (휴무·기준일)", "set.store"),
+                 ("set-items", "품목 마스터", "set.items"),
                  ("set-suppliers", "거래처", "set.suppliers")),
             _mid("화면", ("set-agent", "에이전트 패널", "set.agent")),
             _mid("계정", ("set-account", "프로필·로그인", "set.account")),

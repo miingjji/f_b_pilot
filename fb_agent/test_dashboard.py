@@ -35,7 +35,7 @@ class Events(unittest.TestCase):
         actionable = [r for r in recs if r.status in ("URGENT", "ORDER_NOW", "ORDER_SOON")]
         self.assertTrue(actionable)
         self.assertEqual(len(orders), 2 * len([r for r in actionable if r.order_date and r.arrival_date]))
-        self.assertTrue(all(e.title.split()[1] in ITEMS for e in orders))
+        self.assertTrue(all(any(n in e.title for n in ITEMS) for e in orders))   # 품목명은 공백·괄호를 포함할 수 있음
 
     def test_build_events_range_and_order(self):
         custom = [Event(THU, "b", "staff"), Event(THU, "a", "event"), Event(THU + timedelta(days=40), "far", "event")]

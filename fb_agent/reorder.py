@@ -8,6 +8,7 @@ SAFETY_DAYS = 1    # 안전재고 일수
 COVER_DAYS = 7     # 입고 후 확보할 목표 운영 일수
 SOON_DAYS = 2      # 발주 기한까지 이 일수 이하면 ORDER_SOON
 SEARCH_DAYS = 60   # 발주 가능일 탐색 범위
+MAX_DAYS_LEFT = 3650   # 소진일 계산 상한(10년). 재고가 매우 크면 date 범위를 넘으므로 자름
 
 
 @dataclass
@@ -39,8 +40,15 @@ def order_days(item: Item, start: date, cal: StoreCalendar, n=SEARCH_DAYS) -> li
             if is_order_day(item, start + timedelta(days=i), cal)]
 
 
+def safety_stock(item: Item, safety_days=None) -> float:
+    """안전재고량(기본단위). 명시하지 않으면 품목의 안전재고량, 그것도 없으면 일 소비량 × SAFETY_DAYS."""
+    if safety_days is not None:
+        return item.daily_usage_g * safety_days
+    return item.safety_stock_g if item.safety_stock_g is not None else item.daily_usage_g * SAFETY_DAYS
+
+
 def recommend(item: Item, stock_g, today: date | None = None, cal: StoreCalendar | None = None,
-              safety_days=SAFETY_DAYS, cover_days=COVER_DAYS) -> Recommendation:
+              safety_days=None, cover_days=COVER_DAYS) -> Recommendation:
     today = today or date.today()
     cal = cal or StoreCalendar()
     stock = _check(stock_g, "재고(g)")
@@ -50,14 +58,16 @@ def recommend(item: Item, stock_g, today: date | None = None, cal: StoreCalendar
         return Recommendation(item.name, sup, "NO_USAGE", None, None, None, None, 0, 0,
                               "소비 없음 - 발주 불필요")
 
+    safety_g = safety_stock(item, safety_days)
+    safety_days = math.ceil(safety_g / usage)           # 안전재고를 일수로 환산 (올림)
     days_left = stock / usage
-    stockout = today + timedelta(days=math.floor(days_left))
+    stockout = today + timedelta(days=min(math.floor(days_left), MAX_DAYS_LEFT))
     deadline = stockout - timedelta(days=safety_days)   # 이 날까지는 입고되어야 안전
     candidates = order_days(item, today, cal)
 
     def packs_for(order_d: date) -> int:
         until_arrival = (order_d - today).days + lead
-        need = usage * (until_arrival + safety_days + cover_days) - stock
+        need = usage * (until_arrival + cover_days) + safety_g - stock
         return max(1, math.ceil(need / item.pk_weight_g))
 
     if not candidates:

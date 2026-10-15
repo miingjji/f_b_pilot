@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from converter import parse_count, unit_to_grams
+from converter import parse_count, to_boxes, unit_to_grams
+from data import ITEMS
 from errors import InvalidInputError
 
 MAX_BYTES = 5 * 1024 * 1024
@@ -22,18 +23,30 @@ HEADER_SCAN_ROWS = 10  # 제목 행이 앞에 있는 엑셀 대응
 
 # 표준 열 -> 헤더 별칭 (정규화 후 비교)
 HEADER_ALIASES = {
-    "item": {"품목", "품목명", "상품", "상품명", "자재", "자재명", "item", "name"},
+    "item": {"품목", "품목명", "상품", "상품명", "자재", "자재명", "item", "name", "itemname"},
+    "code": {"품목코드", "코드", "자재코드", "itemcode", "code"},
     "box": {"box", "박스", "상자", "bx"},
     "pk": {"pk", "팩", "봉", "봉지", "pack"},
-    "loose": {"낱개(g)", "낱개", "잔량", "잔량(g)", "g", "gram", "그램"},
+    "loose": {"낱개(g)", "낱개", "낱개(기본단위)", "잔량", "잔량(g)", "g", "ml", "gram", "그램"},
     "ea": {"ea", "개", "낱개(ea)"},
     "text": {"재고", "실사", "실사재고", "재고량", "count", "stock"},
     "qty": {"수량", "qty", "quantity"},
     "unit": {"단위", "unit"},
 }
-TEMPLATE_CSV = "품목,BOX,PK,낱개(g)\n짜사이,0,1,300\n단무지,0,3,0\n청양고추,0,0,200\n춘장,0,2,0\n"
 UNIT_COLS = ("box", "pk", "loose", "ea")
-COL_UNIT = {"box": "BOX", "pk": "PK", "loose": "g", "ea": "EA"}
+COL_UNIT = {"box": "BOX", "pk": "PK", "ea": "EA"}   # 낱개(loose)는 품목의 기본단위(g·ml·개 …)로 센다
+
+
+def template_csv(items) -> str:
+    """업로드 양식: 마스터의 모든 품목을 현재재고량(BOX/PK/낱개)과 함께."""
+    lines = ["품목코드,품목명,BOX,PK,낱개"]
+    for it in items.values():
+        box, pk, loose = to_boxes(it, it.current_stock or 0)
+        lines.append(f"{it.code},{it.name},{box},{pk},{round(loose, 2):g}")
+    return "\n".join(lines) + "\n"
+
+
+TEMPLATE_CSV = template_csv(ITEMS)
 
 
 @dataclass
@@ -161,10 +174,10 @@ def _find_header(df: pd.DataFrame):
             for std, aliases in HEADER_ALIASES.items():
                 if key in {_norm(a) for a in aliases} and std not in cols:
                     cols[std] = j
-        if "item" in cols and len(cols) > 1:
+        if ("item" in cols or "code" in cols) and len(cols) > 1:
             return i, cols
     raise InvalidInputError(
-        "헤더를 찾을 수 없습니다. '품목' 열과 함께 BOX/PK/낱개(g) 또는 '재고' 열이 필요합니다.")
+        "헤더를 찾을 수 없습니다. '품목'(또는 '품목코드') 열과 함께 BOX/PK/낱개 또는 '재고' 열이 필요합니다.")
 
 
 def _to_number(cell, label):
@@ -190,7 +203,7 @@ def _row_grams(item, row, cols):
         if col in cols:
             v = _to_number(row.iloc[cols[col]], col.upper())
             if v is not None:
-                total += unit_to_grams(item, v, COL_UNIT[col])
+                total += unit_to_grams(item, v, item.base_unit if col == "loose" else COL_UNIT[col])
                 used = True
     if "text" in cols and str(row.iloc[cols["text"]]).strip():
         total += parse_count(item, row.iloc[cols["text"]])
@@ -223,18 +236,21 @@ def parse_inventory_file(name: str, raw: bytes, items: dict) -> ImportResult:
         raise last_err
 
     lookup = {_norm(n): n for n in items}
+    by_code = {_norm(it.code): n for n, it in items.items() if it.code}
     res = ImportResult()
     seen = {}  # 품목 -> 처음 나온 행 번호
 
     for i in range(head + 1, len(df)):
         row, rownum = df.iloc[i], i + 1 + offset
-        raw_name = str(row.iloc[cols["item"]]).strip()
-        if not raw_name and not any(str(c).strip() for c in row):
+        raw_name = str(row.iloc[cols["item"]]).strip() if "item" in cols else ""
+        raw_code = str(row.iloc[cols["code"]]).strip() if "code" in cols else ""
+        if not raw_name and not raw_code and not any(str(c).strip() for c in row):
             continue  # 완전히 빈 행
-        if not raw_name:
-            res.errors.append(ImportIssue(rownum, "", "품목명이 비어 있습니다."))
+        if not raw_name and not raw_code:
+            res.errors.append(ImportIssue(rownum, "", "품목명(또는 품목코드)이 비어 있습니다."))
             continue
-        key = lookup.get(_norm(raw_name))
+        key = lookup.get(_norm(raw_name)) or by_code.get(_norm(raw_code))   # 이름 우선, 없으면 코드
+        raw_name = raw_name or raw_code
         if key is None:
             hint = difflib.get_close_matches(raw_name, list(items), n=1, cutoff=0.5)
             tip = f" (혹시 '{hint[0]}'?)" if hint else ""

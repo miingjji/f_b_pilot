@@ -1,20 +1,14 @@
 """세션 공통 상태. 페이지가 바뀌면 위젯 상태는 사라지므로 값은 cfg_* 같은 일반 키에 보관."""
 from datetime import date, timedelta
 
-import pandas as pd
 import streamlit as st
 
 from calendar_data import sample_events
-from data import DEFAULT_CALENDAR, ITEMS, SAMPLE_COUNTS
-from insights import recommendations, sample_stock_g
+from data import DEFAULT_CALENDAR
+from insights import build_table, recommendations, sample_stock_g, stock_from_table
 from menu import STORES
 from models import StoreCalendar
 from viewport import is_mobile, viewport
-
-
-def _sample_table() -> pd.DataFrame:
-    return pd.DataFrame([{"품목": n, "BOX": float(SAMPLE_COUNTS[n][0]), "PK": float(SAMPLE_COUNTS[n][1]),
-                          "낱개(g)": float(SAMPLE_COUNTS[n][2])} for n in ITEMS])
 
 
 def _seed_purchase_orders(today: date) -> list[dict]:
@@ -71,7 +65,11 @@ def get_store() -> str:
 def inv_state() -> dict:
     """현재 매장의 재고 상태: table(BOX/PK/낱개 표), ver(data_editor 키), applied(적용한 업로드 파일), stock_g."""
     inv = st.session_state.inv
-    return inv.setdefault(get_store(), {"table": _sample_table(), "ver": 0, "applied": None, "stock_g": {}})
+    store = get_store()
+    if store not in inv:
+        table = build_table(sample_stock_g(store))
+        inv[store] = {"table": table, "ver": 0, "applied": None, "stock_g": stock_from_table(table)[0]}
+    return inv[store]
 
 
 def get_today() -> date:
@@ -85,7 +83,7 @@ def get_calendar() -> StoreCalendar:
 
 def get_recs():
     """재고 화면을 아직 열지 않았다면 예시 재고로 계산."""
-    return recommendations(inv_state()["stock_g"] or sample_stock_g(), get_today(), get_calendar())
+    return recommendations(inv_state()["stock_g"], get_today(), get_calendar())
 
 
 DOCK_MIN_VIEWPORT = 1760        # 자동 모드에서 에이전트를 옆에 고정하는 최소 창 폭

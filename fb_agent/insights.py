@@ -1,17 +1,58 @@
 """재고 현황 요약 (Streamlit 비의존) - 달력과 에이전트가 같은 계산을 공유."""
+import zlib
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+import numpy as np
+import pandas as pd
+
 import sample_data as sd
-from converter import to_grams
-from data import ITEMS, SAMPLE_COUNTS
+from converter import to_boxes, to_grams
+from data import ITEMS
 from errors import InvalidInputError
+from menu import STORES
 from models import StoreCalendar
 from reorder import Recommendation, recommend
 
 
-def sample_stock_g() -> dict:
-    return {n: to_grams(ITEMS[n], p, l, boxes=b) for n, (b, p, l) in SAMPLE_COUNTS.items()}
+def sample_stock_g(store: str | None = None) -> dict:
+    """시드 재고(품목명 -> 기본단위 수량). 첫 매장(또는 store=None)은 마스터 값 그대로,
+    다른 매장은 품목·매장별로 고정된 배율(0.4~1.7)을 곱해 서로 다른 재고 상황을 만든다."""
+    out = {}
+    for name, it in ITEMS.items():
+        base = float(it.current_stock or 0)
+        if store and store != _FIRST_STORE:
+            f = np.random.default_rng(zlib.crc32(f"{store}|{it.code}".encode())).uniform(0.4, 1.7)
+            base = float(round(base * f))
+        out[name] = base
+    return out
+
+
+_FIRST_STORE = STORES[0]
+
+TABLE_COLUMNS = ["품목코드", "품목", "분류", "단위", "BOX", "PK", "낱개"]
+
+
+def build_table(stock_g: dict) -> pd.DataFrame:
+    """재고(기본단위) -> 실사 입력 표(BOX/PK/낱개)."""
+    rows = []
+    for name, it in ITEMS.items():
+        box, pk, loose = to_boxes(it, stock_g.get(name, 0.0))
+        rows.append({"품목코드": it.code, "품목": name, "분류": it.mid, "단위": it.base_unit,
+                     "BOX": float(box), "PK": float(pk), "낱개": float(round(loose, 2))})
+    return pd.DataFrame(rows, columns=TABLE_COLUMNS)
+
+
+def stock_from_table(df: pd.DataFrame) -> tuple[dict, list]:
+    """실사 입력 표 -> ({품목명: 기본단위 수량}, [(품목명, 오류 메시지)])."""
+    stock, errors = {}, []
+    for _, row in df.iterrows():
+        it = ITEMS[row["품목"]]
+        try:
+            stock[it.name] = to_grams(it, row["PK"], row["낱개"], boxes=row["BOX"])
+        except InvalidInputError as e:
+            errors.append((it.name, str(e)))
+    return stock, errors
 
 
 def recommendations(stock_g: dict, today: date, cal: StoreCalendar) -> list[Recommendation]:
