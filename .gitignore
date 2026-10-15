@@ -1,0 +1,12 @@
+# Python / 가상환경
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# 로컬 비밀값·환경
+.streamlit/secrets.toml
+.env
+
+# e2e 샌드박스 라이브러리 (e2e/setup_sandbox_libs.sh 가 생성)
+.e2e-env/

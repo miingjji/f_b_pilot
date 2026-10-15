@@ -1,0 +1,18 @@
+[theme]
+base = "light"
+primaryColor = "#C2410C"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F6F8"
+textColor = "#1F2937"
+borderColor = "#E3E6EB"
+baseRadius = "10px"
+showSidebarBorder = true
+orangeColor = "#C2410C"
+blueColor = "#2563EB"
+greenColor = "#15803D"
+violetColor = "#7C3AED"
+grayColor = "#6B7280"
+
+[theme.sidebar]
+backgroundColor = "#FAFAFB"
+secondaryBackgroundColor = "#F0F1F4"
