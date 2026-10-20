@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from calendar_data import CATEGORIES, Event
 from data import ITEMS
 from reorder import Recommendation, fmt_date
+from unit_info import qty_for
 
 QUICK_QUESTIONS = ["지금 발주해야 할 품목은?", "이번 주 일정 알려줘", "재고 현황 요약", "인력·매출 이슈 있어?"]
 _TOPIC_BASE = {
@@ -69,7 +70,7 @@ def answer(prompt: str, ctx: AgentContext) -> str:
         if not todo:
             return "지금 발주가 필요한 품목은 없어요. 재고가 모두 충분합니다."
         todo.sort(key=lambda r: ["URGENT", "ORDER_NOW", "ORDER_SOON"].index(r.status))
-        lines = [f"- **{r.item}** [{STATUS_LABEL[r.status]}] {r.supplier} {r.order_packs}PK · "
+        lines = [f"- **{r.item}** [{STATUS_LABEL[r.status]}] {r.supplier} {qty_for(r.item, r.order_packs)} · "
                  f"발주 {fmt_date(r.order_date)} → 입고 {fmt_date(r.arrival_date)}" for r in todo[:MAX_LIST]]
         extra = len(todo) - MAX_LIST
         head = f"발주가 필요한 품목 {len(todo)}개입니다." + (f" 가장 급한 {MAX_LIST}개만 보여드려요." if extra > 0 else "")

@@ -12,6 +12,7 @@ from calendar_data import (CATEGORIES, MANUAL_CATEGORIES, ORDER_STATUSES, Event,
 from errors import InvalidInputError
 from menu import Leaf
 from state import get_calendar, get_recs, get_store, get_today, main_width
+from unit_info import qty_for
 from viewport import is_mobile
 from views import register
 from views.common import pct_delta, sample_notice, won_short
@@ -146,7 +147,7 @@ def order_panel(recs: list, d: date, today: date):
         rows = []
         for r in due:
             label, color = STATUS_BADGE[r.status]
-            rows.append(f":{color}-badge[{label}] **{r.item}** · {r.supplier} · {r.order_packs}PK")
+            rows.append(f":{color}-badge[{label}] **{r.item}** · {r.supplier} · {qty_for(r.item, r.order_packs)}")
         item_list(rows, "이 날 발주할 품목이 없어요.")
         st.button("자동 발주 추천으로 이동", icon=":material/arrow_forward:", type="tertiary", key="go_po", on_click=open_page, args=("po-auto",))
 

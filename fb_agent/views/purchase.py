@@ -1,4 +1,5 @@
 """발주 및 재고관리: 발주관리 · 입고관리 · 기타입출고 · 수불관리."""
+import re
 from datetime import date, timedelta
 
 import pandas as pd
@@ -7,15 +8,17 @@ import streamlit as st
 import real_sales
 import reorder_engine
 import store_calendar
-from converter import parse_count, to_boxes
+from converter import parse_count
 from data import ITEMS, SUPPLIERS
 from errors import InvalidInputError
 from importer import TEMPLATE_CSV, parse_inventory_file
 from insights import build_table, stock_from_table
 from menu import STORES, Leaf
-from order_units import packs_for
+from models import fmt_amount
+from order_units import UNIT_SHORT, WHOLE_UNITS, packs_for
 from reorder import fmt_date, is_order_day, order_days, recommend, safety_stock
 from state import get_calendar, get_store, get_today, inv_state
+from unit_info import display_unit, qty_for, qty_of, stock_of, unit_name, units_of
 from views import register
 from views.common import kpis
 
@@ -66,31 +69,48 @@ def status_badge(status: str):
 
 def rec_card(item, g, r, *, request_button=False):
     """품목 하나의 재고 상태와 발주 추천."""
-    box, pk, loose = to_boxes(item, g)
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center"):
             status_badge(r.status)
             st.markdown(f"**{item.name}** · {item.supplier.name}")
         st.markdown(r.message)
         with st.container(horizontal=True):
-            st.metric("재고", item.fmt(g), f"{box}BOX {pk}PK {item.fmt(loose)}", delta_color="off", delta_arrow="off", border=True)
+            st.metric("재고", stock_of(item, g), item.fmt(g), delta_color="off", delta_arrow="off", border=True)
             st.metric("잔여", "-" if r.days_left is None else f"{r.days_left:.1f}일", f"소진 {fmt_date(r.stockout_date)}",
                       delta_color="off", delta_arrow="off", border=True)
             st.metric("발주 → 입고", fmt_date(r.order_date), fmt_date(r.arrival_date), delta_color="off", delta_arrow="off", border=True)
-            st.metric("추천 수량", f"{r.order_packs} PK", f"{r.order_packs / item.box_pk:.1f} BOX", delta_color="off",
-                      delta_arrow="off", border=True)
+            st.metric("추천 수량", qty_of(item, r.order_packs), delta_color="off", delta_arrow="off", border=True)
         if request_button and r.status in ACTION:
             st.button("구매청구 만들기", key=f"mkreq_{item.name}", icon=":material/add_shopping_cart:",
                       on_click=add_request, args=(item.name, r.order_packs, r.arrival_date, "자동 발주 추천"))
 
 
 # ---------------- 발주관리 ----------------
+def qty_input(label: str, it, *, key: str, min_value: float = 0.5, default: float | None = None, container=st) -> float:
+    """품목의 발주단위로 수량을 입력받고 PK 로 돌려준다. 박스·개·병은 1씩, 팩·kg 는 0.5씩 늘어난다."""
+    u = units_of(it)
+    whole = u.unit in WHOLE_UNITS
+    lo = max(min_value, 1.0) if whole and min_value else min_value
+    q = container.number_input(f"{label} ({unit_name(it)})", min_value=lo, value=max(lo, default if default is not None else 1.0),
+                               step=1.0 if whole else 0.5, key=key, label_visibility="collapsed" if label == "" else "visible")
+    return round(q * u.per, 2)
+
+
+def pk_df(df: pd.DataFrame) -> pd.DataFrame:
+    """표의 '수량(PK)' 열을 품목 발주단위 표기('2박스', '24병 (2박스)')의 '수량' 열로 바꾼다."""
+    if "수량(PK)" not in df or "품목" not in df:
+        return df
+    out = df.copy()
+    out["수량(PK)"] = [qty_for(n, p) for n, p in zip(out["품목"], out["수량(PK)"])]
+    return out.rename(columns={"수량(PK)": "수량"})
+
+
 def add_request(item: str, packs: float, want: date | None, memo: str, toast: bool = True, order_day: date | None = None):
     ss.purchase_requests = [*ss.purchase_requests, {
         "청구번호": f"PR-{len(ss.purchase_requests) + 1:04d}", "청구일": get_today(), "품목": item,
         "거래처": ITEMS[item].supplier.name, "수량(PK)": packs, "발주예정일": order_day, "희망입고일": want, "메모": memo, "상태": "청구"}]
     if toast:
-        st.toast(f"구매청구를 만들었어요: {item} {packs}PK", icon=":material/check_circle:")
+        st.toast(f"구매청구를 만들었어요: {item} {qty_for(item, packs)}", icon=":material/check_circle:")
 
 
 def add_requests_bulk(todo):
@@ -124,7 +144,7 @@ REQ_NEED, REQ_ALL = "발주 필요", "전체"      # 거래처 선택에 함께 
 
 
 def _cart() -> dict:
-    """청구할 품목 {품목명: 수량(PK)}. 거래처를 바꿔도 유지된다."""
+    """청구할 품목 {품목명: 수량(품목의 발주단위)}. 거래처를 바꿔도 유지된다."""
     return ss.setdefault("req_cart", {})
 
 
@@ -170,9 +190,9 @@ def pick_day(sup: str, d: date):
 def cart_submit():
     cart = _cart()
     memo = ss.get("req_memo", "")
-    for name, packs in cart.items():
+    for name, qty in cart.items():
         od, arr = item_schedule(ITEMS[name])
-        add_request(name, packs, arr, memo, toast=False, order_day=od)
+        add_request(name, round(qty * units_of(ITEMS[name]).per, 2), arr, memo, toast=False, order_day=od)
     st.toast(f"구매청구 {len(cart)}건을 등록했어요.", icon=":material/check_circle:")
     ss.req_cart = {}
 
@@ -216,18 +236,24 @@ def schedule_calendar():
 
 
 def req_item_card(it, g, r):
-    """품목 카드: 이름·규격·재고·추천 + 수량을 정해 청구 목록에 담는다."""
+    """품목 카드: 이름·규격·재고·추천 + 수량을 정해 청구 목록에 담는다. 수량은 모두 품목의 발주단위로 보여 준다."""
     in_cart = it.name in _cart()
+    u = units_of(it)
+    one = (f"1박스 = {u.count}{u.each} ({fmt_amount(u.each_amt * u.count, 'ml') if u.each in ('병', '캔') else it.fmt(u.each_amt * u.count)})" if u.each
+           else f"1{unit_name(it)} = {it.fmt(it.pk_weight_g * u.per)}")
     with st.container(border=True):
         st.markdown(f"**{it.name}**")
-        st.caption(f"{it.code} · {it.spec} · {it.mid}")
+        st.caption(f"{it.code} · {one} · {it.mid}")
         with st.container(horizontal=True, vertical_alignment="center"):
             if r.status in ACTION:
                 status_badge(r.status)
-                st.caption(f"추천 {r.order_packs:g}PK")
-            st.caption(f"재고 {it.fmt(g)}")
-        default = float(r.order_packs) if r.status in ACTION and r.order_packs else 1.0
-        st.number_input("수량 (PK)", min_value=0.5, value=max(0.5, default), step=0.5, key=f"rq_{it.name}", label_visibility="collapsed")
+                st.caption(f"추천 {qty_of(it, r.order_packs)}")
+            st.caption(f"재고 {stock_of(it, g)}")
+        whole = u.unit in WHOLE_UNITS
+        lo = 1.0 if whole else 0.5
+        default = round(r.order_packs / u.per, 2) if r.status in ACTION and r.order_packs else 1.0
+        st.number_input(f"수량 ({unit_name(it)})", min_value=lo, value=max(lo, default), step=1.0 if whole else 0.5,
+                        key=f"rq_{it.name}", label_visibility="collapsed")
         st.button("수정" if in_cart else "담기", key=f"rqb_{it.name}", icon=":material/check:" if in_cart else ":material/add_shopping_cart:",
                   type="primary" if in_cart else "secondary", width="stretch", on_click=cart_add, args=(it.name,))
 
@@ -298,7 +324,7 @@ def po_request(leaf: Leaf):
             for name, packs in list(cart.items()):
                 with st.container(horizontal=True, vertical_alignment="center"):
                     od, arr = item_schedule(ITEMS[name])
-                    st.markdown(f"**{name}**  \n{ITEMS[name].supplier.name} · {packs:g}PK  \n"
+                    st.markdown(f"**{name}**  \n{ITEMS[name].supplier.name} · {qty_of(ITEMS[name], round(packs * units_of(ITEMS[name]).per, 2))}  \n"
                                 f"발주 {fmt_date(od)} → 입고 {fmt_date(arr)}")
                     st.button("", key=f"rqx_{name}", icon=":material/close:", type="tertiary", on_click=cart_remove, args=(name,), help="목록에서 빼기")
             st.caption("발주일·입고일은 왼쪽 아래 '3. 발주일 · 입고일' 달력에서 거래처별로 고를 수 있어요. 고르지 않으면 가장 빠른 날로 정해져요.")
@@ -315,7 +341,7 @@ def po_request(leaf: Leaf):
     for r in reversed(reqs):
         with st.container(border=True):
             left, right = st.columns([5, 1], vertical_alignment="center")
-            left.markdown(f"**{r['청구번호']}** · {r['품목']} {r['수량(PK)']:g}PK · {r['거래처']} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}")
+            left.markdown(f"**{r['청구번호']}** · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])} · {r['거래처']} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}")
             if r["상태"] == "청구":
                 right.button("발주 전환", key=f"cv_{r['청구번호']}", on_click=convert_to_po, args=(r["청구번호"],))
             else:
@@ -331,7 +357,7 @@ def po_request_detail(leaf: Leaf):
         st.caption("등록된 구매청구가 없어요. '구매청구' 또는 '자동 발주 추천'에서 만들 수 있어요.")
         return
     status = st.segmented_control("상태", ["전체", "청구", "발주완료"], default="전체", key="req_status") or "전체"
-    df = pd.DataFrame(reqs)
+    df = pk_df(pd.DataFrame(reqs))
     st.dataframe(df if status == "전체" else df[df["상태"] == status], hide_index=True, width="stretch", alt="구매청구 상세내역")
 
 
@@ -384,10 +410,10 @@ def po_auto(leaf: Leaf):
     st.subheader("전체 품목 현황")
     df = pd.DataFrame([{
         "상태": STATUS[r.status][0], "품목코드": it.code, "품목": it.name, "분류": it.mid, "거래처": it.supplier.name,
-        "총재고": it.fmt(g),
+        "총재고": stock_of(it, g),
         "잔여일": r.days_left, "소진예정": fmt_date(r.stockout_date), "발주예정일": fmt_date(r.order_date),
-        "입고예정": fmt_date(r.arrival_date), "추천(PK)": r.order_packs,
-        "추천(BOX)": round(r.order_packs / it.box_pk, 1), "비고": r.message} for it, g, r in results])
+        "입고예정": fmt_date(r.arrival_date), "추천 수량": qty_of(it, r.order_packs),
+        "비고": r.message} for it, g, r in results])
     st.dataframe(df, hide_index=True, width="stretch", alt="품목별 재고 상태와 발주 추천",
                  column_config={"잔여일": st.column_config.ProgressColumn("잔여일", min_value=0, max_value=14, format="%.1f일",
                                                                         help="14일을 가득 찬 값으로 표시"),
@@ -397,7 +423,7 @@ def po_auto(leaf: Leaf):
     if po.empty:
         st.caption("발주할 품목이 없습니다.")
     else:
-        st.dataframe(po[["거래처", "품목", "추천(PK)", "추천(BOX)", "발주예정일", "입고예정", "상태"]]
+        st.dataframe(po[["거래처", "품목", "추천 수량", "발주예정일", "입고예정", "상태"]]
                      .sort_values(["거래처", "발주예정일"]), hide_index=True, width="stretch", alt="거래처별 발주서")
 
 
@@ -487,7 +513,7 @@ def po_engine(leaf: Leaf):
         df = pd.DataFrame({
             "거래처": o["거래처"], "품목": o["품목"], "규격": o["규격"],
             "권장 수량": [_qty(q, u) for q, u in zip(o["권장수량"], o["단위"])], "상한": [_qty(q, u) for q, u in zip(o["상한수량"], o["단위"])],
-            "앱 청구 수량": [f"{pk[by_code[c]]:g} PK" if c in by_code else "마스터 미등록" for c in o["코드"]],
+            "앱 청구 수량": [qty_for(by_code[c], pk[by_code[c]]) if c in by_code else "마스터 미등록" for c in o["코드"]],
             "입고 예정": [fmt_date(d) for d in o["입고예정일"]], "직전 발주": o["직전발주"],
             "발주 확률": (o["확률"] * 100).round(), "시즌": o["시즌"], "근거": o["사유"]})
         view_cols = [c for c in df.columns if c not in ("거래처", "근거")]
@@ -567,35 +593,35 @@ def recv_by_po(leaf: Leaf):
     for p in pending:
         with st.container(border=True):
             left, right = st.columns([5, 1], vertical_alignment="center")
-            left.markdown(f"**{p['발주번호']}** · {p['품목']} {p['수량(PK)']:g}PK · {p['거래처']} · 입고예정 {fmt_date(p['입고예정'])}")
+            left.markdown(f"**{p['발주번호']}** · {p['품목']} {qty_for(p['품목'], p['수량(PK)'])} · {p['거래처']} · 입고예정 {fmt_date(p['입고예정'])}")
             right.button("입고 처리", key=f"rc_{p['발주번호']}", type="primary", on_click=receive_po, args=(p["발주번호"],))
     st.subheader("전체 발주서")
-    st.dataframe(pd.DataFrame(ss.purchase_orders), hide_index=True, width="stretch", alt="발주서 목록")
+    st.dataframe(pk_df(pd.DataFrame(ss.purchase_orders)), hide_index=True, width="stretch", alt="발주서 목록")
 
 
 @register("recv.general")
 def recv_general(leaf: Leaf):
     st.caption("발주서 없이 들어온 물품을 입고 처리합니다. 입고하면 재고에 반영돼요.")
     sup = st.selectbox("거래처", list(SUPPLIERS))
-    with st.form("general_receipt", border=True):
+    with st.container(border=True):
         c1, c2 = st.columns(2)
         item = c1.selectbox("품목", [n for n, i in ITEMS.items() if i.supplier.name == sup] or list(ITEMS))
-        packs = c2.number_input("수량 (PK)", min_value=0.5, value=1.0, step=0.5)
+        packs = qty_input("수량", ITEMS[item], key=f"gr_qty_{item}", container=c2)
         memo = st.text_input("비고", placeholder="선택")
-        if st.form_submit_button("입고 등록", type="primary", icon=":material/move_to_inbox:"):
+        if st.button("입고 등록", type="primary", icon=":material/move_to_inbox:"):
             add_receipt(get_today(), sup, item, packs, "일반입고", memo)
-            st.toast(f"{item} {packs:g}PK 입고 완료", icon=":material/check_circle:")
+            st.toast(f"{item} {qty_for(item, packs)} 입고 완료", icon=":material/check_circle:")
 
 
 @register("recv.detail")
 def recv_detail(leaf: Leaf):
     df = pd.DataFrame(ss.receipts)
-    kpis([("입고 건수", f"{len(df)}건", None), ("입고 수량", f"{df['수량(PK)'].sum():g}PK" if len(df) else "0PK", None)])
+    kpis([("입고 건수", f"{len(df)}건", None), ("입고 품목", f"{df['품목'].nunique() if len(df) else 0}개", None)])
     if df.empty:
         st.caption("입고 내역이 없어요.")
         return
     kind = st.segmented_control("구분", ["전체", "구매발주서", "일반입고"], default="전체", key="recv_kind") or "전체"
-    st.dataframe(df if kind == "전체" else df[df["구분"] == kind], hide_index=True, width="stretch", alt="입고 상세내역")
+    st.dataframe(pk_df(df if kind == "전체" else df[df["구분"] == kind]), hide_index=True, width="stretch", alt="입고 상세내역")
 
 
 @register("recv.returns")
@@ -604,13 +630,13 @@ def recv_returns(leaf: Leaf):
     if not receipts:
         st.caption("반품할 입고 내역이 없어요.")
         return
-    with st.form("return_form", border=True):
+    with st.container(border=True):
         idx = st.selectbox("입고 건", range(len(receipts)), format_func=lambda i: (
-            f"{receipts[i]['입고일']} · {receipts[i]['품목']} {receipts[i]['수량(PK)']:g}PK ({receipts[i]['거래처']})"))
+            f"{receipts[i]['입고일']} · {receipts[i]['품목']} {qty_for(receipts[i]['품목'], receipts[i]['수량(PK)'])} ({receipts[i]['거래처']})"))
         c1, c2 = st.columns(2)
-        packs = c1.number_input("반품 수량 (PK)", min_value=0.5, value=1.0, step=0.5)
+        packs = qty_input("반품 수량", ITEMS[receipts[idx]["품목"]], key=f"rt_qty_{receipts[idx]['품목']}", container=c1)
         reason = c2.selectbox("사유", ["품질 불량", "오배송", "유통기한", "기타"])
-        if st.form_submit_button("반품 등록", type="primary", icon=":material/assignment_return:"):
+        if st.button("반품 등록", type="primary", icon=":material/assignment_return:"):
             r = receipts[idx]
             if packs > r["수량(PK)"]:
                 st.error("입고 수량보다 많이 반품할 수 없어요.")
@@ -621,7 +647,7 @@ def recv_returns(leaf: Leaf):
                 st.toast("반품을 등록했고 재고에서 차감했어요.", icon=":material/check_circle:")
     st.subheader("반품 내역")
     if ss.returns:
-        st.dataframe(pd.DataFrame(ss.returns), hide_index=True, width="stretch", alt="반품 내역")
+        st.dataframe(pk_df(pd.DataFrame(ss.returns)), hide_index=True, width="stretch", alt="반품 내역")
     else:
         st.caption("반품 내역이 없어요.")
 
@@ -629,12 +655,12 @@ def recv_returns(leaf: Leaf):
 # ---------------- 기타입출고 ----------------
 @register("io.loss")
 def io_loss(leaf: Leaf):
-    with st.form("loss_form", border=True):
+    with st.container(border=True):
         c1, c2, c3 = st.columns(3)
         item = c1.selectbox("품목", list(ITEMS), format_func=item_label)
-        packs = c2.number_input("수량 (PK)", min_value=0.0, value=1.0, step=0.5)
+        packs = qty_input("수량", ITEMS[item], key=f"ls_qty_{item}", min_value=0.0, container=c2)
         reason = c3.selectbox("사유", ["폐기", "파손", "유통기한", "시식·샘플", "기타"])
-        if st.form_submit_button("손망실 등록", type="primary", icon=":material/delete_forever:"):
+        if st.button("손망실 등록", type="primary", icon=":material/delete_forever:"):
             if packs <= 0:
                 st.error("수량은 0보다 커야 해요.")
             else:
@@ -645,22 +671,22 @@ def io_loss(leaf: Leaf):
     if df.empty:
         st.caption("등록된 손망실이 없어요.")
         return
-    kpis([("건수", f"{len(df)}건", None), ("총량", f"{df['수량(PK)'].sum():g}PK", None)])
-    st.bar_chart(df.groupby("사유")["수량(PK)"].sum(), alt="사유별 손망실 수량")
-    st.dataframe(df, hide_index=True, width="stretch", alt="손망실 상세내역")
+    kpis([("건수", f"{len(df)}건", None), ("품목", f"{df['품목'].nunique()}개", None)])
+    st.bar_chart(df.groupby("사유").size(), alt="사유별 손망실 건수")
+    st.dataframe(pk_df(df), hide_index=True, width="stretch", alt="손망실 상세내역")
 
 
 @register("io.transfer_request")
 def io_transfer_request(leaf: Leaf):
     me = get_store()
     st.caption(f"'{me}'에서 다른 매장으로 물품 이체를 요청합니다.")
-    with st.form("transfer_form", border=True):
+    with st.container(border=True):
         c1, c2, c3 = st.columns(3)
         to = c1.selectbox("받는 매장", [s for s in STORES if s != me])
         item = c2.selectbox("품목", list(ITEMS), format_func=item_label)
-        packs = c3.number_input("수량 (PK)", min_value=0.5, value=1.0, step=0.5)
+        packs = qty_input("수량", ITEMS[item], key=f"tr_qty_{item}", container=c3)
         memo = st.text_input("메모", placeholder="선택")
-        if st.form_submit_button("이체 요청", type="primary", icon=":material/swap_horiz:"):
+        if st.button("이체 요청", type="primary", icon=":material/swap_horiz:"):
             ss.transfer_requests = [*ss.transfer_requests, {
                 "번호": f"TR-{len(ss.transfer_requests) + 1:04d}", "요청일": get_today(), "보내는 매장": me, "받는 매장": to,
                 "품목": item, "수량(PK)": packs, "메모": memo, "상태": "요청"}]
@@ -670,7 +696,7 @@ def io_transfer_request(leaf: Leaf):
             continue
         with st.container(border=True):
             left, right = st.columns([5, 1], vertical_alignment="center")
-            left.markdown(f"**{r['번호']}** · {r['보내는 매장']} → {r['받는 매장']} · {r['품목']} {r['수량(PK)']:g}PK")
+            left.markdown(f"**{r['번호']}** · {r['보내는 매장']} → {r['받는 매장']} · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])}")
             right.button("승인", key=f"ap_{r['번호']}", on_click=approve_transfer, args=(r["번호"],))
 
 
@@ -688,7 +714,7 @@ def io_transfer(leaf: Leaf):
     if not ss.transfers:
         st.caption("완료된 이체가 없어요. '이체요청'에서 요청하고 승인하면 여기에 표시돼요.")
         return
-    st.dataframe(pd.DataFrame(ss.transfers), hide_index=True, width="stretch", alt="이체 상세내역")
+    st.dataframe(pk_df(pd.DataFrame(ss.transfers)), hide_index=True, width="stretch", alt="이체 상세내역")
 
 
 # ---------------- 수불관리 ----------------
@@ -699,15 +725,15 @@ def stock_flow(leaf: Leaf):
     rows = []
     for it, g, _r in current_results():
         pk = it.pk_weight_g
+        unit, f = display_unit(it)                       # 병·캔이 있으면 낱개, 없으면 품목의 발주단위로 센다
         inn = sum(r["수량(PK)"] for r in ss.receipts if r["품목"] == it.name and r["입고일"] > week_ago)
         out = it.daily_usage_g * 7 / pk
         loss = sum(r["수량(PK)"] for r in ss.losses if r["품목"] == it.name and r["일자"] > week_ago)
         ret = sum(r["수량(PK)"] for r in ss.returns if r["품목"] == it.name and r["반품일"] > week_ago)
         end = g / pk
-        rows.append({"품목": it.name, "기초(PK)": round(end - inn + out + loss + ret, 1), "입고(PK)": round(inn, 1),
-                     "소비(PK)": round(out, 1), "손망실(PK)": round(loss, 1), "반품(PK)": round(ret, 1),
-                     "기말(PK)": round(end, 1)})
-    st.caption("최근 7일 수불: 기초 + 입고 − 소비 − 손망실 − 반품 = 기말 (소비는 일 소비량 기준 추정)")
+        rows.append({"품목": it.name, "단위": unit, "기초": round((end - inn + out + loss + ret) * f, 1), "입고": round(inn * f, 1),
+                     "소비": round(out * f, 1), "손망실": round(loss * f, 1), "반품": round(ret * f, 1), "기말": round(end * f, 1)})
+    st.caption("최근 7일 수불: 기초 + 입고 − 소비 − 손망실 − 반품 = 기말 (소비는 일 소비량 기준 추정). 수량은 품목의 단위(병·박스·팩·개 등)로 보여줘요.")
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="최근 7일 수불현황")
 
 
@@ -810,8 +836,8 @@ def stock_history(leaf: Leaf):
 @register("stock.forecast")
 def stock_forecast(leaf: Leaf):
     results = current_results()
-    rows = [{"품목코드": it.code, "품목": it.name, "분류": it.mid, "재고": it.fmt(g), "일 소비": it.fmt(it.daily_usage_g),
-             "안전재고": it.fmt(safety_stock(it)),
+    rows = [{"품목코드": it.code, "품목": it.name, "분류": it.mid, "재고": stock_of(it, g), "일 소비": stock_of(it, it.daily_usage_g),
+             "안전재고": stock_of(it, safety_stock(it)),
              "소진율(%/일)": round(it.daily_usage_g / g * 100, 1) if g else None,
              "잔여일": r.days_left, "상태": STATUS[r.status][0]} for it, g, r in results]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="안전재고와 소진율 예측",
@@ -822,9 +848,9 @@ def stock_forecast(leaf: Leaf):
     default = [it.name for it, _g, _r in sorted(usable, key=lambda x: x[2].days_left)[:8]]
     picked = st.multiselect("품목", [it.name for it, _g, _r in usable], default=default, key="fc_items")
     days = range(0, 15)
-    chart = pd.DataFrame({it.name: [max(0.0, (g - it.daily_usage_g * d) / it.pk_weight_g) for d in days]
+    chart = pd.DataFrame({it.name: [max(0.0, (g - it.daily_usage_g * d) / it.pk_weight_g / units_of(it).per) for d in days]
                           for it, g, _r in usable if it.name in picked}, index=list(days))
     if chart.empty:
         st.caption("표시할 품목을 선택하세요.")
     else:
-        st.line_chart(chart, x_label="일 후", y_label="재고(PK)", alt="품목별 14일 재고 예측")
+        st.line_chart(chart, x_label="일 후", y_label="재고(품목별 발주단위)", alt="품목별 14일 재고 예측")
