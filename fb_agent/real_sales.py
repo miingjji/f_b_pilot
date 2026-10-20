@@ -4,6 +4,9 @@
 매출 기준은 정리 파일과 같다: 취소구분이 `정상`+`매출취소`인 행의 순매출 (판매및할인 시트와 일치하는 기준).
 `주문취소`·`메뉴정정`은 매출로 잡지 않고 취소 내역 화면에만 쓴다.
 
+2026-01-01~09-30 은 영수증 단위 원본이 없고 일자별 합계만 있다 (`python -m prep.data_2026` 이 만든 data/cleaned/2026/매출일자별_정제.csv).
+이 구간은 totals_2026() 이 일 매출·할인·부가세·영수증수를 주고, 시간대·메뉴·결제·영수증은 sample_data 가 그날 실제 매출에 맞춰 나눈다.
+
 데이터가 없는 날짜·매장은 이 모듈이 아니라 sample_data 의 가상 값이 채운다.
 """
 from datetime import date
@@ -13,6 +16,9 @@ from pathlib import Path
 import pandas as pd
 
 CLEANED = Path(__file__).resolve().parent / "data" / "cleaned" / "매출입력_정제.csv"
+CLEANED_2026 = Path(__file__).resolve().parent / "data" / "cleaned" / "2026" / "매출일자별_정제.csv"
+SETTLE_2026 = CLEANED_2026.with_name("정산_월별_정제.csv")          # `python -m prep.settlement_2026` 이 만든 월별 정산 (결제수단·시간대·객수)
+SETTLE_BANDS_2026 = CLEANED_2026.with_name("정산_시간대별_정제.csv")
 REAL_STORE = "수원점"
 SALES_KINDS = ("정상", "매출취소")
 CANCEL_KINDS = {"매출취소": "매출취소", "주문취소": "주문취소", "메뉴정정": "메뉴취소"}   # 원본 구분 -> 화면 유형
@@ -22,6 +28,10 @@ MENU_KEEP = 14                                                 # 상위 메뉴 �
 
 def available() -> bool:
     return CLEANED.exists()
+
+
+def available_2026() -> bool:
+    return CLEANED_2026.exists()
 
 
 def pay_group(text: str) -> str:
@@ -53,6 +63,61 @@ def sales_rows() -> pd.DataFrame:
 @lru_cache(maxsize=1)
 def days() -> frozenset:
     return frozenset(rows()["날짜"].unique())
+
+
+@lru_cache(maxsize=1)
+def totals_2026() -> pd.DataFrame:
+    """2026-01-01~09-30 일자별 합계 (index=date, 무매출일 포함). 열: 총매출·할인·순매출·부가세·영수증수·객수·영업여부.
+
+    할인 = 총매출 − 실매출, 부가세 = 실매출 − 순매출 (12월 정제 데이터에서 성립하는 관계).
+    객수는 일자별 원본에 없다. 월별 정산이 있으면 영수증수 × (그 달 실제 객수 ÷ 영수증수), 없으면 12월 비율로 **추정**한다.
+    """
+    d = pd.read_csv(CLEANED_2026)
+    d["날짜"] = pd.to_datetime(d["매출일자"]).dt.date
+    d["할인"] = d["총매출"] - d["실매출"]
+    d["부가세"] = d["실매출"] - d["순매출"]
+    ratio = daily()["객수"].sum() / daily()["영수증수"].sum()
+    per_month = settle_2026()["객수"] / settle_2026()["영수증건수"] if SETTLE_2026.exists() else {}
+    month = d["매출일자"].str[:7].map(per_month).fillna(ratio) if len(per_month) else ratio
+    d["객수"] = (d["영수증수"] * month).round().astype(int)
+    return d.set_index("날짜")[["총매출", "할인", "순매출", "부가세", "영수증수", "객수", "영업여부"]]
+
+
+@lru_cache(maxsize=1)
+def settle_2026() -> pd.DataFrame:
+    """월별 정산 (index='2026-01'…). 열: 영수증건수·총매출·할인·실매출·순매출·부가세·결제수단별 금액·객수."""
+    return pd.read_csv(SETTLE_2026).set_index("월")
+
+
+def has_settle(d: date) -> bool:
+    return SETTLE_2026.exists() and f"{d:%Y-%m}" in settle_2026().index
+
+
+@lru_cache(maxsize=1)
+def _card_split() -> float:
+    """정산의 '신용카드'는 간편결제를 포함한다. 12월 실제 비율로 간편결제 몫을 나눈다."""
+    g = sales_rows().groupby("결제")["순매출"].sum()
+    return float(g.get("간편결제", 0) / max(1, g.get("간편결제", 0) + g.get("신용카드", 0)))
+
+
+def settle_pay_mix(d: date) -> dict:
+    """그 달 실제 결제수단 구성비 (PAY_NAMES 순서, 합 1). 상품권·외상·포인트·기타는 '상품권·기타'로 묶는다."""
+    m = settle_2026().loc[f"{d:%Y-%m}"]
+    easy = m["신용카드"] * _card_split()
+    amt = {"신용카드": m["신용카드"] - easy, "간편결제": easy, "현금": m["현금"], "상품권·기타": m["상품권"] + m["외상"] + m["포인트"] + m["기타결제"]}
+    return {k: float(amt[k] / m["실매출"]) for k in PAY_NAMES}
+
+
+def settle_band_share(d: date) -> dict:
+    """그 달 시간대 구간별 실매출 비중 {(시작시, 끝시): 비중}."""
+    b = pd.read_csv(SETTLE_BANDS_2026)
+    b = b[(b["월"] == f"{d:%Y-%m}") & (b["실매출"] > 0)]
+    return {(int(r.시작시), int(r.끝시)): float(r.실매출 / b["실매출"].sum()) for r in b.itertuples()}
+
+
+def has_total(d: date) -> bool:
+    """영수증 단위가 아니라 일자별 합계만 실제인 날(2026-01~09)."""
+    return available_2026() and d in totals_2026().index
 
 
 def has(d: date) -> bool:

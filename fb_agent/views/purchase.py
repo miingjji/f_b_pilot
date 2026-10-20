@@ -4,13 +4,17 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+import real_sales
+import reorder_engine
+import store_calendar
 from converter import parse_count, to_boxes
 from data import ITEMS, SUPPLIERS
 from errors import InvalidInputError
 from importer import TEMPLATE_CSV, parse_inventory_file
 from insights import build_table, stock_from_table
 from menu import STORES, Leaf
-from reorder import fmt_date, order_days, recommend, safety_stock
+from order_units import packs_for
+from reorder import fmt_date, is_order_day, order_days, recommend, safety_stock
 from state import get_calendar, get_store, get_today, inv_state
 from views import register
 from views.common import kpis
@@ -81,10 +85,10 @@ def rec_card(item, g, r, *, request_button=False):
 
 
 # ---------------- 발주관리 ----------------
-def add_request(item: str, packs: float, want: date | None, memo: str, toast: bool = True):
+def add_request(item: str, packs: float, want: date | None, memo: str, toast: bool = True, order_day: date | None = None):
     ss.purchase_requests = [*ss.purchase_requests, {
         "청구번호": f"PR-{len(ss.purchase_requests) + 1:04d}", "청구일": get_today(), "품목": item,
-        "거래처": ITEMS[item].supplier.name, "수량(PK)": packs, "희망입고일": want, "메모": memo, "상태": "청구"}]
+        "거래처": ITEMS[item].supplier.name, "수량(PK)": packs, "발주예정일": order_day, "희망입고일": want, "메모": memo, "상태": "청구"}]
     if toast:
         st.toast(f"구매청구를 만들었어요: {item} {packs}PK", icon=":material/check_circle:")
 
@@ -106,24 +110,204 @@ def convert_to_po(req_no: str):
             lead = ITEMS[r["품목"]].lead_time_days
             ss.purchase_orders = [*ss.purchase_orders, {
                 "발주번호": f"PO-{len(ss.purchase_orders) + 1:04d}", "거래처": r["거래처"], "품목": r["품목"],
-                "수량(PK)": r["수량(PK)"], "발주일": get_today(),
+                "수량(PK)": r["수량(PK)"], "발주일": r.get("발주예정일") or get_today(),
                 "입고예정": r["희망입고일"] or get_today() + timedelta(days=lead), "상태": "입고대기"}]
             r["상태"] = "발주완료"
             st.toast(f"{req_no}을(를) 발주서로 전환했어요.", icon=":material/check_circle:")
             return
 
 
+REQ_PAGE = 12            # 구매청구 화면에서 한 페이지에 보여 주는 품목 카드 수
+REQ_COLS = 3
+REQ_SUP_COLS = 5         # 거래처 카드 한 줄 개수
+REQ_NEED, REQ_ALL = "발주 필요", "전체"      # 거래처 선택에 함께 놓는 묶음
+
+
+def _cart() -> dict:
+    """청구할 품목 {품목명: 수량(PK)}. 거래처를 바꿔도 유지된다."""
+    return ss.setdefault("req_cart", {})
+
+
+def cart_add(name: str):
+    _cart()[name] = float(ss[f"rq_{name}"])
+
+
+def cart_remove(name: str):
+    _cart().pop(name, None)
+
+
+CAL_WEEKS = 4            # 일정 달력에 보여 주는 주 수
+
+
+def _cart_items(sup: str) -> list:
+    return [ITEMS[n] for n in _cart() if ITEMS[n].supplier.name == sup]
+
+
+def sup_days(sup: str) -> list[date]:
+    """담긴 품목 모두에 맞는 발주 가능일 (업체 발주 요일·매장 영업일·입고일 영업일)."""
+    items, today, cal = _cart_items(sup), get_today(), get_calendar()
+    return [today + timedelta(days=i) for i in range(CAL_WEEKS * 7)
+            if items and all(is_order_day(it, today + timedelta(days=i), cal) for it in items)]
+
+
+def chosen_day(sup: str) -> date | None:
+    """사용자가 고른 발주일. 고른 적이 없거나 더는 가능하지 않으면 가장 빠른 발주 가능일."""
+    days = sup_days(sup)
+    pick = ss.get(f"req_day_{sup}")
+    return pick if pick in days else (days[0] if days else None)
+
+
+def item_schedule(it) -> tuple[date | None, date | None]:
+    """(발주일, 입고 예정일). 업체 카드에서 고른 날이 있으면 그 날, 없으면 가장 빠른 발주 가능일."""
+    od = chosen_day(it.supplier.name)
+    return (od, od + timedelta(days=it.lead_time_days)) if od else (None, None)
+
+
+def pick_day(sup: str, d: date):
+    ss[f"req_day_{sup}"] = d
+
+
+def cart_submit():
+    cart = _cart()
+    memo = ss.get("req_memo", "")
+    for name, packs in cart.items():
+        od, arr = item_schedule(ITEMS[name])
+        add_request(name, packs, arr, memo, toast=False, order_day=od)
+    st.toast(f"구매청구 {len(cart)}건을 등록했어요.", icon=":material/check_circle:")
+    ss.req_cart = {}
+
+
+def schedule_calendar():
+    """청구 목록에 담긴 거래처마다 카드형 달력: 발주 가능한 날을 눌러 발주일을 정하면 입고일이 따라온다."""
+    sups = sorted({ITEMS[n].supplier.name for n in _cart()})
+    if not sups:
+        return
+    today = get_today()
+    st.markdown("##### 3. 발주일 · 입고일")
+    st.caption("거래처마다 발주 가능한 날만 눌러서 고를 수 있어요. 날짜를 누르면 입고 예정일이 함께 정해집니다. 회색 날짜는 발주 요일이 아니거나 휴점·입고 불가일이에요.")
+    start = today - timedelta(days=today.weekday())
+    for sup in sups:
+        items, days = _cart_items(sup), set(sup_days(sup))
+        cur = chosen_day(sup)
+        leads = sorted({it.lead_time_days for it in items})
+        lead = f"D+{leads[0]}" if len(leads) == 1 else f"D+{leads[0]}~{leads[-1]}"
+        with st.container(border=True):
+            st.markdown(f"**{sup}** · {len(items)}개 품목 · 발주 {SUPPLIERS[sup].order_days_label} · 리드타임 {lead}")
+            if cur:
+                od, arr = item_schedule(items[0])
+                st.caption(f"선택: 발주 {fmt_date(cur)}" + (f" → 입고 {fmt_date(arr)}" if len(leads) == 1 else f" → 입고 {lead}"))
+            else:
+                st.warning(f"앞으로 {CAL_WEEKS}주 안에 발주 가능한 날이 없어요.", icon=":material/event_busy:")
+            head = st.columns(7)
+            for c, w in zip(head, "월화수목금토일"):
+                c.caption(f"**{w}**")
+            for wk in range(CAL_WEEKS):
+                row = st.columns(7)
+                for i, c in enumerate(row):
+                    d = start + timedelta(days=wk * 7 + i)
+                    if d < today:
+                        c.button(" ", key=f"cal_{sup}_{d:%m%d}", disabled=True, width="stretch")
+                    elif d in days:
+                        label = f"{d:%m/%d}" + (f"\n→ {(d + timedelta(days=leads[0])):%m/%d}" if len(leads) == 1 else "")
+                        c.button(label, key=f"cal_{sup}_{d:%m%d}", type="primary" if d == cur else "secondary", width="stretch",
+                                 on_click=pick_day, args=(sup, d), help=f"{fmt_date(d)} 발주")
+                    else:
+                        c.button(f"{d:%m/%d}", key=f"cal_{sup}_{d:%m%d}", disabled=True, width="stretch")
+
+
+def req_item_card(it, g, r):
+    """품목 카드: 이름·규격·재고·추천 + 수량을 정해 청구 목록에 담는다."""
+    in_cart = it.name in _cart()
+    with st.container(border=True):
+        st.markdown(f"**{it.name}**")
+        st.caption(f"{it.code} · {it.spec} · {it.mid}")
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if r.status in ACTION:
+                status_badge(r.status)
+                st.caption(f"추천 {r.order_packs:g}PK")
+            st.caption(f"재고 {it.fmt(g)}")
+        default = float(r.order_packs) if r.status in ACTION and r.order_packs else 1.0
+        st.number_input("수량 (PK)", min_value=0.5, value=max(0.5, default), step=0.5, key=f"rq_{it.name}", label_visibility="collapsed")
+        st.button("수정" if in_cart else "담기", key=f"rqb_{it.name}", icon=":material/check:" if in_cart else ":material/add_shopping_cart:",
+                  type="primary" if in_cart else "secondary", width="stretch", on_click=cart_add, args=(it.name,))
+
+
 @register("po.request")
 def po_request(leaf: Leaf):
-    st.caption("필요한 품목을 청구하고, 승인되면 발주서로 전환합니다.")
-    with st.form("new_request", border=True):
-        c1, c2, c3 = st.columns(3)
-        item = c1.selectbox("품목", list(ITEMS), format_func=item_label)
-        packs = c2.number_input("수량 (PK)", min_value=0.5, value=2.0, step=0.5)
-        want = c3.date_input("희망 입고일", value=get_today() + timedelta(days=2), min_value=get_today())
-        memo = st.text_input("메모", placeholder="선택")
-        if st.form_submit_button("청구 등록", type="primary", icon=":material/add:"):
-            add_request(item, packs, want, memo)
+    st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 한 번에 등록합니다. 승인되면 발주서로 전환해요.")
+    today, cal = get_today(), get_calendar()
+    stock = inv_state()["stock_g"]
+    info = {it.name: (stock.get(it.name, 0.0), recommend(it, stock.get(it.name, 0.0), today, cal)) for it in ITEMS.values()}
+    need = [n for n, (_g, r) in info.items() if r.status in ACTION]
+    by_sup: dict = {}
+    for it in ITEMS.values():
+        by_sup.setdefault(it.supplier.name, []).append(it)
+    labels = {f"{REQ_NEED} ({len(need)})": REQ_NEED, f"{REQ_ALL} ({len(ITEMS)})": REQ_ALL,
+              **{f"{n} ({len(v)})": n for n, v in sorted(by_sup.items(), key=lambda kv: (-len(kv[1]), kv[0]))}}
+
+    main, side = st.columns([3, 1], gap="medium")
+    with main:
+        st.markdown("##### 1. 거래처")
+        names = list(labels)
+        if ss.get("req_supplier") not in labels:
+            ss.req_supplier = names[0]
+        pick = ss.req_supplier
+        with st.container(height=230, border=True):
+            for i in range(0, len(names), REQ_SUP_COLS):
+                for col, n in zip(st.columns(REQ_SUP_COLS), names[i:i + REQ_SUP_COLS]):
+                    col.button(n, key=f"req_sup_{n}", type="primary" if n == pick else "secondary", width="stretch",
+                               on_click=ss.__setitem__, args=("req_supplier", n))
+        sup = labels[pick]
+        items = ([ITEMS[n] for n in need] if sup == REQ_NEED else list(ITEMS.values()) if sup == REQ_ALL else by_sup[sup])
+        c1, c2 = st.columns([2, 3], vertical_alignment="bottom")
+        q = c1.text_input("품목 검색", placeholder="이름 · 품목코드 · 규격", key="req_q").strip().lower()
+        mids = sorted({it.mid for it in items if it.mid})
+        mid = c2.segmented_control("분류", [REQ_ALL, *mids], default=REQ_ALL, key="req_mid") if len(mids) > 1 else REQ_ALL
+        if q:
+            items = [it for it in items if q in f"{it.name} {it.code} {it.spec}".lower()]
+        if mid and mid != REQ_ALL:
+            items = [it for it in items if it.mid == mid]
+        items = sorted(items, key=lambda it: (info[it.name][1].status not in ACTION, STATUS_ORDER[info[it.name][1].status], it.name))
+
+        sig = (sup, q, mid)
+        if ss.get("req_sig") != sig:                                   # 거래처·검색·분류가 바뀌면 첫 페이지부터
+            ss.req_sig, ss.req_page = sig, 0
+        pages = max(1, -(-len(items) // REQ_PAGE))
+        page = min(ss.get("req_page", 0), pages - 1)
+        st.markdown(f"##### 2. 품목 ({len(items)}개)")
+        if not items:
+            st.info("조건에 맞는 품목이 없습니다. 검색어나 분류를 바꿔 보세요.", icon=":material/search_off:")
+        shown = items[page * REQ_PAGE:(page + 1) * REQ_PAGE]
+        for row in range(0, len(shown), REQ_COLS):
+            cols = st.columns(REQ_COLS)
+            for col, it in zip(cols, shown[row:row + REQ_COLS]):
+                with col:
+                    req_item_card(it, *info[it.name])
+        if pages > 1:
+            with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="center"):
+                st.button("이전", icon=":material/chevron_left:", disabled=page == 0, key="req_prev", on_click=lambda: ss.update(req_page=page - 1))
+                st.caption(f"{page + 1} / {pages} 페이지")
+                st.button("다음", icon=":material/chevron_right:", disabled=page >= pages - 1, key="req_next", on_click=lambda: ss.update(req_page=page + 1))
+
+    with side:
+        with st.container(border=True):
+            cart = _cart()
+            st.markdown(f"##### 청구 목록 ({len(cart)})")
+            if not cart:
+                st.caption("카드에서 '담기'를 누르면 여기에 쌓여요.")
+            for name, packs in list(cart.items()):
+                with st.container(horizontal=True, vertical_alignment="center"):
+                    od, arr = item_schedule(ITEMS[name])
+                    st.markdown(f"**{name}**  \n{ITEMS[name].supplier.name} · {packs:g}PK  \n"
+                                f"발주 {fmt_date(od)} → 입고 {fmt_date(arr)}")
+                    st.button("", key=f"rqx_{name}", icon=":material/close:", type="tertiary", on_click=cart_remove, args=(name,), help="목록에서 빼기")
+            st.caption("발주일·입고일은 왼쪽 아래 '3. 발주일 · 입고일' 달력에서 거래처별로 고를 수 있어요. 고르지 않으면 가장 빠른 날로 정해져요.")
+            st.text_input("메모", placeholder="선택", key="req_memo")
+            st.button(f"청구 등록 ({len(cart)}건)", type="primary", icon=":material/add:", width="stretch", disabled=not cart, on_click=cart_submit)
+
+    with main:
+        schedule_calendar()
+
     st.subheader("청구 목록")
     reqs = ss.purchase_requests
     if not reqs:
@@ -131,7 +315,7 @@ def po_request(leaf: Leaf):
     for r in reversed(reqs):
         with st.container(border=True):
             left, right = st.columns([5, 1], vertical_alignment="center")
-            left.markdown(f"**{r['청구번호']}** · {r['품목']} {r['수량(PK)']:g}PK · {r['거래처']} · 희망입고 {fmt_date(r['희망입고일'])}")
+            left.markdown(f"**{r['청구번호']}** · {r['품목']} {r['수량(PK)']:g}PK · {r['거래처']} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}")
             if r["상태"] == "청구":
                 right.button("발주 전환", key=f"cv_{r['청구번호']}", on_click=convert_to_po, args=(r["청구번호"],))
             else:
@@ -157,15 +341,24 @@ def po_leadtime(leaf: Leaf):
     st.subheader("거래처")
     st.dataframe(pd.DataFrame([{"거래처": s.name, "발주 요일": s.order_days_label, "리드타임": f"D+{s.lead_time_days}"}
                                for s in SUPPLIERS.values()]), hide_index=True, width="stretch", alt="거래처 리드타임")
-    st.subheader("품목별 다음 발주 가능일")
+    head, search = st.columns([3, 2], vertical_alignment="bottom")
+    head.subheader("품목별 다음 발주 가능일")
+    q = search.text_input("품목 검색", placeholder="품목명 · 거래처 · 품목코드", key="lt_q").strip().lower()
     st.caption("거래처 발주 요일, 매장 휴무, 입고일 영업 여부를 모두 반영합니다.")
     rows = []
     for it in ITEMS.values():
+        if q and q not in f"{it.name} {it.supplier.name} {it.code}".lower():
+            continue
         days = order_days(it, today, cal)[:3]
         rows.append({"품목": it.name, "거래처": it.supplier.name, "리드타임": f"D+{it.lead_time_days}",
                      "다음 발주 가능일": " · ".join(fmt_date(d) for d in days) or "-",
                      "입고 예정": " · ".join(fmt_date(d + timedelta(days=it.lead_time_days)) for d in days) or "-"})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="품목별 다음 발주 가능일")
+    if q:
+        st.caption(f"'{q}' 검색 결과 {len(rows)}개 / 전체 {len(ITEMS)}개")
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="품목별 다음 발주 가능일")
+    else:
+        st.info("검색 결과가 없습니다. 품목명이나 거래처 이름을 바꿔 보세요.", icon=":material/search_off:")
 
 
 @register("po.auto")
@@ -206,6 +399,146 @@ def po_auto(leaf: Leaf):
     else:
         st.dataframe(po[["거래처", "품목", "추천(PK)", "추천(BOX)", "발주예정일", "입고예정", "상태"]]
                      .sort_values(["거래처", "발주예정일"]), hide_index=True, width="stretch", alt="거래처별 발주서")
+
+
+# ---------------- 발주 추천 (이력 기반) ----------------
+def _engine_stamp() -> float:
+    """모델·자료 파일이 바뀌면 캐시를 새로 만들도록 하는 표시."""
+    files = [reorder_engine.MODEL_PATH, *reorder_engine.DATA.glob("20*/구매청구_정제.csv"), *reorder_engine.DATA.glob("20*/매출일자별_정제.csv")]
+    return max((f.stat().st_mtime for f in files if f.exists()), default=0.0)
+
+
+@st.cache_resource(show_spinner="발주·입고 이력을 불러오는 중…")
+def _engine(stamp: float):
+    return reorder_engine.Engine()
+
+
+@st.cache_data(show_spinner="발주 추천을 계산하는 중…")
+def _engine_table(day: date, stamp: float) -> pd.DataFrame:
+    return _engine(stamp).recommend(day).drop(columns=["_key"])
+
+
+def _qty(q, unit) -> str:
+    return f"{q:g} {unit}"
+
+
+def engine_requests(o: pd.DataFrame):
+    """추천 표 → 앱 구매청구 목록. 품목코드로 앱 마스터와 맞추고, 발주단위 수량을 PK 로 환산한다. 마스터에 없는 품목은 따로 돌려준다."""
+    by_code = {it.code: it for it in ITEMS.values() if it.code}
+    ok, missing = [], []
+    for r in o.itertuples():
+        it = by_code.get(r.코드)
+        if it is None:
+            missing.append(r.품목)
+            continue
+        packs, why = packs_for(r.권장수량, r.단위, r.규격, it.pk_weight_g, it.box_pk, it.base_unit)
+        ok.append(dict(item=it.name, packs=packs, want=r.입고예정일, memo=f"이력 기반 발주 추천 · 권장 {r.권장수량:g}{r.단위}" + (f" · {why}" if why else "")))
+    return ok, missing
+
+
+def add_engine_requests(reqs: list):
+    """추천을 구매청구로 (이미 '청구' 상태인 품목은 건너뜀)."""
+    pending = {r["품목"] for r in ss.purchase_requests if r["상태"] == "청구"}
+    made = 0
+    for q in reqs:
+        if q["item"] not in pending:
+            add_request(q["item"], q["packs"], q["want"], q["memo"], toast=False)
+            pending.add(q["item"])
+            made += 1
+    st.toast(f"구매청구 {made}건을 만들었어요 (이미 청구한 {len(reqs) - made}건은 건너뜀).", icon=":material/check_circle:")
+
+
+@register("po.engine")
+def po_engine(leaf: Leaf):
+    st.caption("거래처 청구·입고 이력(2025~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. 재고는 반영하지 않으며, 재고(수불부)가 연결되면 실제 재고 기준으로 바뀝니다.")
+    has_data = (reorder_engine.DATA / "2026" / "구매청구_정제.csv").exists()
+    if get_store() != real_sales.REAL_STORE or not has_data:
+        st.info(f"이력 기반 발주 추천은 실제 청구·입고 이력이 있는 '{real_sales.REAL_STORE}'에서만 제공합니다. "
+                "다른 매장은 '자동 발주 추천'(재고 기준)을 이용해 주세요.", icon=":material/info:")
+        return
+    stamp = _engine_stamp()
+    e = _engine(stamp)
+    day = st.date_input("기준일 (발주하는 날)", value=get_today(), key="po_engine_day")
+    if day > e.last + timedelta(days=3):
+        st.warning(f"매출·발주 자료가 {e.last:%Y-%m-%d}까지라, {(day - e.last).days}일 뒤 날짜는 최근 주문 이력이 빠져 결과가 부정확합니다. "
+                   "구매청구·일자별 매출을 갱신한 뒤 모델을 다시 학습해 주세요 (python reorder_engine.py --fit).", icon=":material/warning:")
+    status, why = store_calendar.status(day)
+    if status != "영업":
+        st.caption(f":material/event: {day:%m/%d} {status}{f' · {why}' if why else ''}")
+    t = _engine_table(day, stamp)
+    orders = t[t["상태"] == "발주"].sort_values(["거래처", "확률"], ascending=[True, False])
+    n_season, n_check = int((t["상태"] == "시즌 시작 예상").sum()), int((t["상태"] == "재고 확인").sum())
+    kpis([("발주 추천", f"{len(orders)}건", None), ("거래처", f"{orders['거래처'].nunique()}곳", None),
+          ("시즌 시작 예상", f"{n_season}건", None), ("재고 확인 필요", f"{n_check}건", None)])
+
+    st.subheader("오늘 발주 추천")
+    if orders.empty:
+        n_day, n_wait = int((t["상태"].isin(["발주", "보류", "재고 확인"])).sum()), int((t["상태"] == "보류").sum())
+        if n_day == 0:
+            st.success(f"{day:%m/%d}은 거래처 발주 요일이 아니거나 휴점이라 발주할 품목이 없습니다.", icon=":material/check_circle:")
+        else:
+            st.success(f"{day:%m/%d} 발주 가능한 정기 품목 {n_day}개 중 지금 발주할 시점인 품목은 없습니다 ({n_wait}개는 아직 이른 상태).", icon=":material/check_circle:")
+    else:
+        pick = st.multiselect("거래처", sorted(orders["거래처"].unique()), default=sorted(orders["거래처"].unique()), key="po_engine_sup")
+        o = orders[orders["거래처"].isin(pick)]
+        reqs, missing = engine_requests(o)
+        by_code = {it.code: it.name for it in ITEMS.values() if it.code}
+        pk = {r["item"]: r["packs"] for r in reqs}
+        df = pd.DataFrame({
+            "거래처": o["거래처"], "품목": o["품목"], "규격": o["규격"],
+            "권장 수량": [_qty(q, u) for q, u in zip(o["권장수량"], o["단위"])], "상한": [_qty(q, u) for q, u in zip(o["상한수량"], o["단위"])],
+            "앱 청구 수량": [f"{pk[by_code[c]]:g} PK" if c in by_code else "마스터 미등록" for c in o["코드"]],
+            "입고 예정": [fmt_date(d) for d in o["입고예정일"]], "직전 발주": o["직전발주"],
+            "발주 확률": (o["확률"] * 100).round(), "시즌": o["시즌"], "근거": o["사유"]})
+        view_cols = [c for c in df.columns if c not in ("거래처", "근거")]
+        st.button(f"구매청구 만들기 ({len(reqs)}건)", icon=":material/add_shopping_cart:", on_click=add_engine_requests, args=(reqs,), disabled=not reqs,
+                  help="선택한 모든 거래처의 추천을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다. 업체별로 만들려면 아래 각 거래처의 버튼을 누르세요.")
+        cols = {"발주 확률": st.column_config.ProgressColumn("발주 확률", min_value=0, max_value=100, format="%d%%",
+                                                          help="이 품목을 오늘 발주할 가능성. 평소 주문 주기와 마지막 주문 후 경과일로 계산"),
+                "상한": st.column_config.TextColumn(help="평소보다 많이 팔릴 때를 대비한 여유 수량(25% 더)")}
+        for sup_name, g in o.groupby("거래처", sort=True):
+            sub, _miss = engine_requests(g)
+            arrive = sorted({d for d in g["입고예정일"]})
+            with st.container(border=True):
+                h, b = st.columns([4, 1], vertical_alignment="center")
+                h.markdown(f"**{sup_name}** · {len(g)}개 품목 · 입고 예정 {', '.join(fmt_date(d) for d in arrive)}")
+                b.button(f"{sup_name} 청구 ({len(sub)}건)", key=f"po_engine_req_{sup_name}", icon=":material/add_shopping_cart:", width="stretch",
+                         on_click=add_engine_requests, args=(sub,), disabled=not sub, help=f"{sup_name} 추천만 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다.")
+                gd = df[df["거래처"] == sup_name]
+                st.dataframe(gd[view_cols], hide_index=True, width="stretch", alt=f"{sup_name} 발주 추천", column_config=cols)
+                with st.expander("근거 보기"):
+                    st.markdown("\n".join(f"- **{n}**: {w}" for n, w in zip(gd["품목"], gd["근거"])))
+        if missing:
+            st.caption(f":material/info: 앱 품목 마스터에 없어 구매청구를 만들 수 없는 품목 {len(missing)}건: {', '.join(missing)}")
+        st.download_button("발주 추천 내려받기 (CSV)", df.to_csv(index=False).encode("utf-8-sig"), file_name=f"발주추천_{day:%Y%m%d}.csv", mime="text/csv",
+                           icon=":material/download:")
+
+    with st.expander(f"시즌 시작 예상 ({n_season}건) — 작년 이맘때 주문했던 시즌 품목"):
+        x = t[t["상태"] == "시즌 시작 예상"][["거래처", "품목", "규격", "직전발주", "사유"]]
+        st.caption("계절 메뉴 때문에 특정 시기에만 주문하는 품목입니다. 시즌 메뉴가 시작되면 발주 추천에 자동으로 나타나요. 집기·소모품도 함께 표시될 수 있습니다.")
+        if len(x):
+            st.dataframe(x, hide_index=True, width="stretch", alt="시즌 시작 예상 품목")
+        else:
+            st.caption("해당 품목이 없습니다.")
+    with st.expander(f"재고 확인 필요 ({n_check}건) — 주문 간격이 길어 재고 없이는 판단할 수 없는 품목"):
+        x = t[t["상태"] == "재고 확인"][["거래처", "품목", "규격", "권장수량", "단위", "직전발주", "사유"]]
+        if len(x):
+            st.dataframe(x, hide_index=True, width="stretch", alt="재고 확인 필요 품목")
+        else:
+            st.caption("해당 품목이 없습니다.")
+    with st.expander("이 추천은 어떻게 만들어지나요?"):
+        ev = reorder_engine.load_eval()
+        st.markdown(
+            "- **언제**: 품목마다 '평소 주문 주기'와 '마지막 주문 후 경과일', 요일 습관으로 오늘 주문할 확률을 계산합니다. 확률이 기준 이상이고 거래처 발주 요일·영업일이면 추천합니다.\n"
+            "- **얼마나**: 그 품목의 평소 주문량(최근 4회 중앙값)을 기준으로, 앞으로 매출 예측이 평소보다 낮으면 조금 줄이고 높으면 조금 늘립니다.\n"
+            "- **시즌 품목**: 최근 1년 중 주문이 없던 달이 4개월 이상이면 시즌 품목으로 보고, 비수기에는 추천하지 않습니다.\n"
+            "- **입고 예정일**: 거래처별 실제 리드타임(요일별)과 매장 휴점일을 반영합니다.")
+        if ev:
+            t_ = ev["시점"]
+            st.markdown(f"**검증 결과** (학습 {ev['학습기간']} → 학습에 쓰지 않은 {ev['검증기간']}, {ev['판단건수']:,}건)\n\n"
+                        f"- 발주 시점 정확도(F1): **{t_['엔진']['F1'] * 100:.0f}%** (단순 규칙 {t_['간격규칙']['F1'] * 100:.0f}%) — 추천한 것 중 {t_['엔진']['정밀도'] * 100:.0f}%가 실제 발주, 실제 발주의 {t_['엔진']['재현율'] * 100:.0f}%를 포착\n"
+                        f"- 발주 수량 오차: **{ev['수량']['엔진']:.0f}%** (평소 주문량 그대로 {ev['수량']['직전4회']:.0f}%)")
+        st.caption(f"학습 자료 {e.last:%Y-%m-%d}까지 · 수량은 '1팩·2팩' 같은 주문 단위라 오차를 크게 줄이기 어렵습니다. 재고가 연결되면 정확도가 올라갑니다.")
 
 
 # ---------------- 입고관리 ----------------

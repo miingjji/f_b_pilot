@@ -98,7 +98,7 @@ def realtime(leaf: Leaf):
 def ticket(leaf: Leaf):
     sales_notice()
     df = sd.daily_sales(get_store(), get_today(), 30)
-    kpis([("평균 객단가", won(df["ticket"].mean()), None), ("평균 회전율", f"{df['turnover'].mean():.2f}회", f"좌석 {sd.SEATS}석 기준")])
+    kpis([("평균 객단가", won(df.loc[df["customers"] > 0, "ticket"].mean()), None), ("평균 회전율", f"{df['turnover'].mean():.2f}회", f"좌석 {sd.SEATS}석 기준")])
     c1, c2 = st.columns(2)
     c1.markdown("**객단가**")
     c1.line_chart(iso(df), x="date", y="ticket", x_label="일자", y_label="원", alt="일자별 객단가")

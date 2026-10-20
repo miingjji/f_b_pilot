@@ -16,11 +16,18 @@ def sample_notice(what: str = "POS"):
 
 
 def sales_notice(what: str = "POS"):
-    """매출 화면 안내: 실제 모드의 수원점은 실제 매출 기간을, 그 밖은 샘플 안내를 보여 준다."""
+    """매출 화면 안내 (마크다운이라 ~ 는 \\~ 로 적는다: 한 쌍이면 취소선이 된다): 실제 모드의 수원점은 실제 매출 기간을, 그 밖은 샘플 안내를 보여 준다."""
     if sd._real(get_store()):
         a, b = real_sales.span()
-        st.caption(f":material/database: 수원점 {a:%Y-%m-%d}~{b:%m-%d} 실제 매출입니다. 이 기간 밖의 날짜는 실제 구성비를 따른 "
-                   "가상 값(요일·공휴일·계절 패턴을 따라 2026년 등을 채움)이고, 취소 사유·처리자와 결제수단 중 간편결제(원본에 구분 없음)는 가상·미구분입니다.")
+        txt = (f":material/database: 수원점 {a:%Y-%m-%d}\\~{b:%m-%d}은 영수증 단위 실제 매출입니다.")
+        if real_sales.available_2026():
+            t = real_sales.totals_2026()
+            settle = real_sales.SETTLE_2026.exists()
+            txt += (f" {t.index.min():%Y-%m-%d}\\~{t.index.max():%m-%d}은 일자별 실제 매출(총매출·할인·순매출·영수증수)이고, "
+                    + ("객수·결제수단·시간대 구간(10\\~13·14\\~17·18\\~21시)은 월별 정산 실제 값에 맞췄습니다. " if settle else "객수는 영수증수로 추정한 값입니다. ")
+                    + "**일별 시간대 세부·메뉴·영수증은 추정값**이니 메뉴·발주 판단에는 12월 실제 데이터를 참고하세요.")
+        txt += " 그 밖의 날짜는 실제 구성비를 따른 가상 값이고, 취소 사유·처리자와 간편결제(원본에 구분 없음)도 가상·미구분입니다."
+        st.caption(txt)
     else:
         sample_notice(what)
 

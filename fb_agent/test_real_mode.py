@@ -36,7 +36,7 @@ out["seed_ok"] = not render("recv-by-po").exception
 out["seeds"] = [(p["품목"] in data.ITEMS, data.ITEMS[p["품목"]].supplier.name == p["거래처"]) for p in seeds]
 
 # 2) 화면 렌더링
-leaves = ["home-dashboard", "po-auto", "stock-input", "stock-forecast", "stock-flow", "po-leadtime", "set-items", "set-suppliers",
+leaves = ["home-dashboard", "po-auto", "po-engine", "stock-input", "stock-forecast", "stock-flow", "po-leadtime", "set-items", "set-suppliers",
           "ai-alerts", "ai-report", "recv-general", "po-request"]
 exc = {l: [e.message[:120] for e in render(l).exception] for l in leaves}
 out["exceptions"] = {k: v for k, v in exc.items() if v}
@@ -46,6 +46,44 @@ at = render("po-auto")
 out["po_auto_captions"] = [c.value for c in at.caption if "나머지" in c.value]
 out["po_auto_buttons"] = [b.label for b in at.button if "전체 구매청구" in b.label]
 out["po_auto_cards"] = len([b for b in at.button if b.label == "구매청구 만들기"])
+
+
+# 3-2) 발주 추천 (이력 기반): 자료가 있는 날 / 자료가 끝난 뒤 / 발주일이 아닌 날
+ENGINE = '''
+import streamlit as st
+from datetime import date
+from state import init_state
+init_state()
+st.session_state.cfg_today = date({y}, {m}, {d})
+import views
+from menu import get_leaf
+views.render(get_leaf("po-engine"))
+'''
+def render_engine(y, m, d):
+    return AppTest.from_string(ENGINE.format(y=y, m=m, d=d), default_timeout=300).run()
+a1, a2, a3 = render_engine(2026, 10, 1), render_engine(2026, 10, 21), render_engine(2026, 10, 4)
+btn = [b for b in a1.button if b.label.startswith("구매청구 만들기")]
+n0 = len(a1.session_state["purchase_requests"])
+made = a2_ = None
+if btn:
+    a1 = btn[0].click().run()
+    made = len(a1.session_state["purchase_requests"]) - n0
+    btn = [b for b in a1.button if b.label.startswith("구매청구 만들기")]
+    a1 = btn[0].click().run()                                     # 한 번 더 누르면 이미 청구한 품목은 건너뛴다
+    again = len(a1.session_state["purchase_requests"]) - n0 - made
+    reqs = a1.session_state["purchase_requests"][n0:]
+else:
+    again, reqs = None, []
+out["engine_req"] = {"button": len(btn), "made": made, "again": again, "items_in_master": all(r["품목"] in data.ITEMS for r in reqs),
+                     "positive": all(r["수량(PK)"] > 0 for r in reqs), "memo": reqs[0]["메모"] if reqs else ""}
+out["engine"] = {
+    "exc": [e.message[:200] for at in (a1, a2, a3) for e in at.exception],
+    "orders_rows": sum(len(d.value) for d in a1.dataframe),
+    "sup_cards": len([b for b in a1.button if b.key and b.key.startswith("po_engine_req_")]),
+    "kpis": [m.label for m in a1.metric],
+    "warn_ok": len(a1.warning), "warn_stale": len(a2.warning), "sunday_success": len(a3.success),
+    "download": [b.label for b in a1.get("download_button")] if hasattr(a1, "get") else [],
+}
 
 # 4) 에이전트 응답 길이, 달력 일정 묶기
 ctx_at = AppTest.from_string('''
@@ -103,6 +141,25 @@ class RealMode(unittest.TestCase):
         self.assertLessEqual(self.r["po_auto_cards"], 8)
         self.assertEqual(len(self.r["po_auto_captions"]), 1)
         self.assertEqual(len(self.r["po_auto_buttons"]), 1)
+
+    def test_po_engine_screen(self):
+        r = self.r["engine"]
+        self.assertEqual(r["exc"], [])
+        self.assertGreaterEqual(r["orders_rows"], 10)                                  # 2026-10-01(목) 에는 실제 추천이 여러 건
+        self.assertGreaterEqual(r["sup_cards"], 2)                                     # 거래처마다 카드와 '이 업체 청구' 버튼
+        self.assertEqual(r["kpis"], ["발주 추천", "거래처", "시즌 시작 예상", "재고 확인 필요"])
+        self.assertEqual(r["warn_ok"], 0)                                              # 자료 끝 3일 안이면 경고 없음
+        self.assertEqual(r["warn_stale"], 1)                                           # 자료가 끝난 뒤(10-21)에는 경고
+        self.assertEqual(r["sunday_success"], 1)                                       # 일요일은 발주일이 아니라는 안내
+        self.assertEqual(len(r["download"]), 1)
+
+    def test_po_engine_can_make_purchase_requests_once(self):
+        r = self.r["engine_req"]
+        self.assertEqual(r["button"], 1)
+        self.assertGreaterEqual(r["made"], 10)                                         # 추천 대부분이 마스터에 있어 청구가 만들어진다
+        self.assertEqual(r["again"], 0)                                                # 같은 품목은 두 번 청구하지 않는다
+        self.assertTrue(r["items_in_master"] and r["positive"])
+        self.assertIn("이력 기반 발주 추천", r["memo"])
 
     def test_agent_answers_are_short_even_with_hundreds_of_items(self):
         self.assertEqual(self.r["recs"], 903)
