@@ -121,5 +121,99 @@ class SeasonAndRules(unittest.TestCase):
         self.assertEqual(e.day_sales(date(2025, 12, 20), date(2025, 12, 5)), 3_000_000.0)                                    # 자료가 있으면 실제
 
 
+class StockFromCounts(unittest.TestCase):
+    def setUp(self):
+        self.book = make_book({K: every(date(2025, 6, 2), date(2025, 12, 19), 2, 3)})
+        self.hist = pd.Series(3_000_000.0, index=list(self.book.daily.index))
+
+    def engine(self, counts):
+        return re_.Engine(book=self.book, hist=self.hist, model=None, counts=counts)
+
+    def test_estimate_is_count_plus_arrivals_minus_expected_use(self):
+        e = self.engine({K[0]: [(date(2025, 12, 10), 6.0)]})
+        D = date(2025, 12, 13)
+        r = e.recommend_item(K, D, use_stock=True)
+        g = self.book.by_item[K]
+        got = float(g[(g["도착"] > date(2025, 12, 10)) & (g["도착"] < D)]["수량"].sum())
+        rate = float(g[(g["청구일자"] >= D - timedelta(days=re_.WINDOW)) & (g["청구일자"] < D)]["수량"].sum()) / sum(3_000_000.0 for _ in range(re_.WINDOW))
+        self.assertAlmostEqual(r["재고"], max(0.0, 6.0 + got - rate * 3_000_000.0 * 2), places=6)   # 실사 다음 날(12-11)부터 전날(12-12)까지 2일
+
+    def test_old_count_is_not_used(self):
+        e = self.engine({K[0]: [(date(2025, 11, 30), 6.0)]})
+        r = e.recommend_item(K, date(2025, 12, 20), use_stock=True)
+        self.assertTrue(np.isnan(r["재고"]))
+        self.assertEqual(r["상태"], e.recommend_item(K, date(2025, 12, 20))["상태"])           # 습관 판단 그대로
+
+    def test_use_stock_off_changes_nothing(self):
+        e = self.engine({K[0]: [(date(2025, 12, 18), 0.0)]})
+        D = date(2025, 12, 20)
+        a, b = e.recommend_item(K, D), e.recommend_item(K, D, use_stock=False)
+        self.assertEqual((a["상태"], a["사유"]), (b["상태"], b["사유"]))
+        self.assertTrue(np.isnan(a["재고"]))
+
+    def test_stock_resolves_long_cycle_items(self):
+        long_item = ("0003", "카레", "1kg")
+        book = make_book({long_item: every(date(2025, 3, 3), date(2025, 12, 14), 20, 4), K: every(date(2025, 6, 2), date(2025, 12, 19), 2, 3)})
+        hist = pd.Series(3_000_000.0, index=list(book.daily.index))
+        D = date(2025, 12, 17)
+        r0 = re_.Engine(book=book, hist=hist, model=None, counts={}).recommend_item(long_item, D)
+        self.assertEqual(r0["상태"], "재고 확인")
+        low = re_.Engine(book=book, hist=hist, model=None, counts={"0003": [(date(2025, 12, 15), 0.0)]}).recommend_item(long_item, D, use_stock=True)
+        high = re_.Engine(book=book, hist=hist, model=None, counts={"0003": [(date(2025, 12, 15), 999.0)]}).recommend_item(long_item, D, use_stock=True)
+        self.assertEqual((low["상태"], high["상태"]), ("발주", "보류"))
+
+    def test_ample_stock_flags_a_habit_order(self):
+        # 모델이 없으면 확률이 없어 주의를 붙이지 않는다 → 간단한 모델로 확률을 만든다
+        feat = re_.FEATURES
+        rows = pd.DataFrame(np.zeros((40, len(feat))), columns=feat)
+        rows["gapratio"] = np.r_[np.zeros(20), np.ones(20) * 2]
+        rows["실제발주"] = np.r_[np.zeros(20), np.ones(20)]
+        model = re_.TimingModel.fit(rows)
+        last = self.book.by_item[K]["청구일자"].iloc[-1]
+        D = last + timedelta(days=3) if (last + timedelta(days=3)).weekday() != 6 else last + timedelta(days=4)
+        E = D - timedelta(days=1)
+        e = re_.Engine(book=self.book, hist=self.hist, model=model, counts={K[0]: [(E, 500.0)]})
+        r = e.recommend_item(K, D, use_stock=True)
+        self.assertEqual(r["상태"], "발주")                                                   # 판단은 습관 그대로
+        self.assertEqual(r["재고주의"], "재고 넉넉")
+        self.assertIn("재고가 넉넉할 수 있음", r["사유"])
+
+
+class LoadCounts(unittest.TestCase):
+    def write_month(self, root: Path, ym: str, count_qty: float, receipt_qty: float, code="0001"):
+        d = root / ym
+        d.mkdir(parents=True)
+        pd.DataFrame({"품목코드_RMS": [code, "없음"], "재고실사_수량": [count_qty, 5.0]}).to_csv(d / "실사재고_정제.csv", index=False)
+        pd.DataFrame({"품목코드_RMS": [code], "당월합계_수량": [receipt_qty]}).to_csv(d / "입고내역_정제.csv", index=False)
+
+    def book_with(self, per_month: dict):
+        orders = []
+        for ym, q in per_month.items():
+            orders.append((date(int(ym[:4]), int(ym[5:]), 10), q))
+        return make_book({K: orders}, start=date(2025, 1, 1), end=date(2025, 12, 31))
+
+    def test_factor_from_order_vs_receipt_and_month_end_dates(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            for ym in ("2025-01", "2025-02", "2025-03"):
+                self.write_month(root, ym, 3.0, 10.0)
+            counts = re_.load_counts(self.book_with({"2025-01": 5, "2025-02": 5, "2025-03": 5}), root)
+        self.assertEqual([d for d, _ in counts["0001"]], [date(2025, 1, 31), date(2025, 2, 28), date(2025, 3, 31)])
+        self.assertEqual([q for _, q in counts["0001"]], [1.5, 1.5, 1.5])                    # 주문 5 : 수불부 입고 10 → 환산 0.5
+        self.assertNotIn("없음", counts)
+
+    def test_unstable_ratio_drops_the_item(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            for ym, r in (("2025-01", 10.0), ("2025-02", 2.0), ("2025-03", 7.0)):
+                self.write_month(root, ym, 3.0, r)
+            counts = re_.load_counts(self.book_with({"2025-01": 5, "2025-02": 5, "2025-03": 5}), root)
+        self.assertEqual(counts, {})
+
+    def test_no_ledger_directory(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.assertEqual(re_.load_counts(self.book_with({"2025-01": 5}), Path(t) / "없음"), {})
+
+
 if __name__ == "__main__":
     unittest.main()

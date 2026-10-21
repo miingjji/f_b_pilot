@@ -41,6 +41,9 @@ LONG_GAP = 14           # 주문 간격 중앙값이 이보다 길면 재고 없
 WINDOW, SEASON_WINDOW = 180, 90   # 평소 매출·소비 속도를 보는 기간(일)
 SEASON_OFF_MONTHS = 4   # 최근 12개월 중 이 개월 이상 주문이 없으면 시즌 품목
 SEASON_RECENT = 45      # 시즌 품목이 이 기간 안에 주문했으면 성수기로 본다
+LEDGER = DATA / "수불부"      # 월별 수불부 정제본 (실사재고·입고내역)
+STOCK_AMPLE = 4.0       # 추정 재고가 입고 전 예상 소비의 이 배수보다 크면 '재고 넉넉' 주의 (습관 발주의 적중률: 부족할 때 75~80% → 8배 넘을 때 47%)
+STALE_DAYS = 14         # 월말 실사로부터 이 기간 안의 날짜에만 재고 추정을 쓴다 (그 뒤는 입고·소비 추정 오차가 쌓인다)
 FEATURES = ["gapratio", "over", "dow", "lg", "ln", "since", "lscale"]
 
 
@@ -138,9 +141,44 @@ def load_eval() -> dict | None:
 _AUTO = object()
 
 
+def month_end(ym: str) -> date:
+    y, m = int(ym[:4]), int(ym[5:7])
+    return (date(y + (m == 12), m % 12 + 1, 1)) - timedelta(days=1)
+
+
+def load_counts(book: "Book", ledger_dir: Path | None = None) -> dict:
+    """월말 실사재고 -> {품목코드: [(실사일, 발주단위 수량), ...]}.
+
+    실사재고 수량은 규격 단위(팩·개 …)이고 발주수량은 발주단위라서, 같은 달의 구매청구 발주수량 ÷ 수불부 입고수량 비율로 환산한다.
+    95% 품목은 비율이 1 이다. 비율이 달마다 크게 흔들리거나 비교할 달이 없으면(박스 환산 등) 그 품목은 재고를 쓰지 않는다.
+    """
+    root = ledger_dir or LEDGER
+    months = sorted(p.name for p in root.glob("20*") if (p / "실사재고_정제.csv").exists())
+    if not months:
+        return {}
+    o = book.orders.assign(m=[f"{d:%Y-%m}" for d in book.orders["청구일자"]]).groupby(["품목코드_RMS", "m"])["수량"].sum()
+    counts, ratios = {}, {}
+    for m in months:
+        c = pd.read_csv(root / m / "실사재고_정제.csv", dtype={"품목코드_RMS": str})
+        c = c[c["품목코드_RMS"] != "없음"].groupby("품목코드_RMS")["재고실사_수량"].sum()
+        r = pd.read_csv(root / m / "입고내역_정제.csv", dtype={"품목코드_RMS": str}).groupby("품목코드_RMS")["당월합계_수량"].sum()
+        for code, q in r[r > 0].items():
+            if (code, m) in o.index:
+                ratios.setdefault(code, []).append(float(o[(code, m)]) / float(q))
+        for code, q in c.items():
+            counts.setdefault(code, []).append((month_end(m), float(q)))
+    factor = {}
+    for code, v in ratios.items():
+        med = float(np.median(v))
+        if len(v) >= 2 and np.std(v) / med < 0.15 or (len(v) == 1 and abs(med - 1) < 0.02):
+            factor[code] = med
+    return {code: [(d, q * factor[code]) for d, q in lst] for code, lst in counts.items() if code in factor}
+
+
 class Engine:
-    def __init__(self, book: Book | None = None, hist: pd.Series | None = None, model=_AUTO, beta_down: float = 0.25, beta_up: float = 0.5):
+    def __init__(self, book: Book | None = None, hist: pd.Series | None = None, model=_AUTO, beta_down: float = 0.25, beta_up: float = 0.5, counts=_AUTO):
         self.b = book or load_book()
+        self.counts = load_counts(self.b) if counts is _AUTO else (counts or {})   # 월말 실사재고 (없으면 {})
         self.hist = sf.load_history() if hist is None else hist
         self.model = TimingModel.load() if model is _AUTO else model
         self.beta_down, self.beta_up = beta_down, beta_up      # 수량 탄력성: 규모비<1 / >1 일 때 (평소 주문량 × 규모비^β)
@@ -214,12 +252,33 @@ class Engine:
         ly = g[(g["청구일자"] >= D - timedelta(days=365 + 20)) & (g["청구일자"] <= D - timedelta(days=365 - 20))]
         return "시즌 시작 예상" if len(ly) else "비수기"
 
-    def recommend_item(self, key: tuple, D: date, on_hand: float | None = None) -> dict:
+    def latest_count(self, D: date) -> date | None:
+        """D 이전의 가장 최근 월말 실사일 (실사 자료가 없으면 None)."""
+        days = [d for lst in self.counts.values() for d, _ in lst if d < D]
+        return max(days) if days else None
+
+    def stock_estimate(self, key: tuple, D: date, rate: float) -> float | None:
+        """D 아침의 예상 재고(발주단위). 직전 월말 실사 + 그 뒤 도착한 입고 − 예상 소비(평소 소비 속도 × 매출). 실사가 없거나 오래됐으면 None.
+        rate = 매출 1원당 평소 소비량(발주단위)."""
+        lst = self.counts.get(key[0])
+        if not lst:
+            return None
+        past = [(d, q) for d, q in lst if d < D]
+        if not past:
+            return None
+        E, q0 = past[-1]
+        if (D - E).days > STALE_DAYS:
+            return None
+        g = self.b.by_item[key]
+        got = float(g[(g["도착"] > E) & (g["도착"] < D)]["수량"].sum())
+        return max(0.0, q0 + got - rate * self.sales(D, E + timedelta(days=1), D))
+
+    def recommend_item(self, key: tuple, D: date, on_hand: float | None = None, use_stock: bool = False) -> dict:
         g = self.b.by_item[key]
         past = g[(g["청구일자"] < D) & (g["청구일자"] >= D - timedelta(days=365))]
         supplier, unit = (past["거래처"].mode().iloc[0] if len(past) else g["거래처"].iloc[-1]), g["발주단위"].iloc[-1]
         out = dict(_key=key, 코드=key[0], 거래처=supplier, 품목=key[1], 규격=key[2], 단위=unit, 상태="", 시즌="", 확률=np.nan, 권장수량=np.nan, 상한수량=np.nan, 기준수량=np.nan, 규모비=np.nan,
-                   입고예정일=None, 커버일수=np.nan, 직전발주=None, 사유="", **{f: np.nan for f in FEATURES})
+                   입고예정일=None, 커버일수=np.nan, 직전발주=None, 재고=np.nan, 소비예상=np.nan, 재고주의="", 사유="", **{f: np.nan for f in FEATURES})
         if len(past) < MIN_ORDERS:
             return out | dict(상태="불규칙", 사유=f"최근 1년 주문 {len(past)}회 (정기 {MIN_ORDERS}회 이상 필요)")
         season = self.season_state(g, D)
@@ -257,32 +316,45 @@ class Engine:
         since = (min(D, self.last + timedelta(days=1)) - od[-1]).days      # 자료가 끝난 뒤 날짜는 '자료 마지막 날 다음 날' 기준 (모델이 본 적 없는 경과일로 외삽하지 않게)
         feat = dict(gapratio=min(4.0, since / mg), over=float(since >= mg - 0.5), dow=float(np.mean([x.weekday() == D.weekday() for x in od])),
                     lg=float(np.log(mg)), ln=float(np.log(len(od))), since=float(min(30, since)), lscale=float(np.log(max(0.2, scale))))
-        if on_hand is not None:                                               # 실제 재고가 있으면 확률 대신 재고로 판단
-            end = A2 if A2 else A + timedelta(days=gap)
-            rate = float(win["수량"].sum()) / S_win
-            need = rate * self.sales(D, D, end)
-            p, due, why = np.nan, float(on_hand) < need, f"재고 {on_hand:g}{unit} < {end:%m-%d} 입고 전 예상 소비 {need:.1f}{unit}"
+        rate = float(win["수량"].sum()) / S_win
+        est = self.stock_estimate(key, D, rate) if (use_stock and on_hand is None) else None      # 월말 실사로 추정한 재고
+        long_cycle = raw_gap > LONG_GAP
+        end = A2 if A2 else A + timedelta(days=gap)
+        need = rate * self.sales(D, D, end)
+        shown = on_hand if on_hand is not None else est
+        if shown is not None:
+            out["재고"], out["소비예상"] = float(shown), need
+        if on_hand is not None or (est is not None and long_cycle):          # 실제 재고(또는 주문 간격이 길어 습관으로 못 보는 품목의 추정 재고)로 판단
+            have = float(on_hand if on_hand is not None else est)
+            p, due, why = np.nan, have < need, f"{'재고' if on_hand is not None else '예상 재고'} {have:.1f}{unit} < {end:%m-%d} 입고 전 예상 소비 {need:.1f}{unit}"
+            long_cycle = False                                                 # 재고를 알면 주문 간격이 길어도 재고로 판단한다
         elif self.model is not None:
             p = self.model.prob(feat)
             due, why = p >= self.model.th, f"발주 확률 {p * 100:.0f}% (임계 {self.model.th * 100:.0f}%) · 마지막 발주 {since}일 전 / 평소 주기 {mg:.0f}일"
         else:
             p, due, why = np.nan, since >= mg - 0.5, f"마지막 발주 {since}일 전 / 평소 주기 {mg:.0f}일 (확률 모델 없음)"
+        if est is not None and not np.isnan(p) and need > 0:                   # 습관으로 정한 발주에 재고 상황을 덧붙인다 (판단은 바꾸지 않음)
+            cover = est / need
+            why += f" · 예상 재고 {est:.1f}{unit}(입고 전 소비의 {cover:.1f}배)"
+            if due and cover > STOCK_AMPLE:
+                why += " — 재고가 넉넉할 수 있음, 확인 권장"
+                out["재고주의"] = "재고 넉넉"
         step = 0.1 if unit in ("킬로그램", "kg") else 1.0
         rnd = lambda x: float(max(step, np.round(x / step) * step))
         up = lambda x: float(max(step, np.ceil(x / step - 1e-9) * step))
         last = past.iloc[-1]
-        long_cycle = raw_gap > LONG_GAP
         out |= dict(상태="재고 확인" if long_cycle else ("발주" if due else "보류"), 확률=p, 권장수량=rnd(q), 상한수량=up(hi), 기준수량=base, 규모비=scale,
                     입고예정일=A, 커버일수=gap, 직전발주=f"{last['청구일자']:%m-%d} {last['수량']:g}", **feat,
                     사유=(f"주문 간격 중앙값 {raw_gap:.0f}일 — 재고 없이는 시점 판단 불가, 마지막 발주 {since}일 전" if long_cycle else why))
         return out
 
-    def recommend(self, D: date, suppliers=None, on_hand: dict | None = None) -> pd.DataFrame:
+    def recommend(self, D: date, suppliers=None, on_hand: dict | None = None, use_stock: bool = False) -> pd.DataFrame:
+        """use_stock=True 면 직전 월말 실사재고로 재고를 추정해 쓴다 (실사가 STALE_DAYS 안인 품목만; 나머지는 주문 습관 기준)."""
         rows = []
         for key, g in self.b.by_item.items():
             if g["청구일자"].iloc[0] >= D:
                 continue
-            r = self.recommend_item(key, D, (on_hand or {}).get(key))
+            r = self.recommend_item(key, D, (on_hand or {}).get(key), use_stock)
             if suppliers is None or r["거래처"] in suppliers:
                 rows.append(r)
         return pd.DataFrame(rows)

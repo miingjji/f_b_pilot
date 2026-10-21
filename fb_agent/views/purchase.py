@@ -430,7 +430,8 @@ def po_auto(leaf: Leaf):
 # ---------------- 발주 추천 (이력 기반) ----------------
 def _engine_stamp() -> float:
     """모델·자료 파일이 바뀌면 캐시를 새로 만들도록 하는 표시."""
-    files = [reorder_engine.MODEL_PATH, *reorder_engine.DATA.glob("20*/구매청구_정제.csv"), *reorder_engine.DATA.glob("20*/매출일자별_정제.csv")]
+    files = [reorder_engine.MODEL_PATH, *reorder_engine.DATA.glob("20*/구매청구_정제.csv"), *reorder_engine.DATA.glob("20*/매출일자별_정제.csv"),
+             *reorder_engine.LEDGER.glob("20*/실사재고_정제.csv")]
     return max((f.stat().st_mtime for f in files if f.exists()), default=0.0)
 
 
@@ -441,7 +442,7 @@ def _engine(stamp: float):
 
 @st.cache_data(show_spinner="발주 추천을 계산하는 중…")
 def _engine_table(day: date, stamp: float) -> pd.DataFrame:
-    return _engine(stamp).recommend(day).drop(columns=["_key"])
+    return _engine(stamp).recommend(day, use_stock=True).drop(columns=["_key"])
 
 
 def _qty(q, unit) -> str:
@@ -476,7 +477,8 @@ def add_engine_requests(reqs: list):
 
 @register("po.engine")
 def po_engine(leaf: Leaf):
-    st.caption("거래처 청구·입고 이력(2025~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. 재고는 반영하지 않으며, 재고(수불부)가 연결되면 실제 재고 기준으로 바뀝니다.")
+    st.caption("거래처 청구·입고 이력(2025~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
+               "월말 실사재고(수불부)가 있으면 재고를 추정해 참고로 보여 주고, 주문 간격이 길어 습관으로 판단할 수 없는 품목은 재고로 판단합니다.")
     has_data = (reorder_engine.DATA / "2026" / "구매청구_정제.csv").exists()
     if get_store() != real_sales.REAL_STORE or not has_data:
         st.info(f"이력 기반 발주 추천은 실제 청구·입고 이력이 있는 '{real_sales.REAL_STORE}'에서만 제공합니다. "
@@ -492,6 +494,14 @@ def po_engine(leaf: Leaf):
     if status != "영업":
         st.caption(f":material/event: {day:%m/%d} {status}{f' · {why}' if why else ''}")
     t = _engine_table(day, stamp)
+    counted = e.latest_count(day)
+    if counted is None:
+        st.caption(":material/inventory_2: 재고 반영 없음 — 월말 실사재고 자료가 없습니다.")
+    elif (day - counted).days > reorder_engine.STALE_DAYS:
+        st.caption(f":material/inventory_2: 최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 재고 추정은 쓰지 않았습니다 "
+                   f"(실사 후 {reorder_engine.STALE_DAYS}일 안에만 반영). 새 수불부를 올리면 반영됩니다.")
+    else:
+        st.caption(f":material/inventory_2: {counted:%Y-%m-%d} 월말 실사 + 그 뒤 입고 − 예상 소비로 재고를 추정했습니다 ({int(t['재고'].notna().sum())}개 품목).")
     orders = t[t["상태"] == "발주"].sort_values(["거래처", "확률"], ascending=[True, False])
     n_season, n_check = int((t["상태"] == "시즌 시작 예상").sum()), int((t["상태"] == "재고 확인").sum())
     kpis([("발주 추천", f"{len(orders)}건", None), ("거래처", f"{orders['거래처'].nunique()}곳", None),
@@ -515,6 +525,7 @@ def po_engine(leaf: Leaf):
             "권장 수량": [_qty(q, u) for q, u in zip(o["권장수량"], o["단위"])], "상한": [_qty(q, u) for q, u in zip(o["상한수량"], o["단위"])],
             "앱 청구 수량": [qty_for(by_code[c], pk[by_code[c]]) if c in by_code else "마스터 미등록" for c in o["코드"]],
             "입고 예정": [fmt_date(d) for d in o["입고예정일"]], "직전 발주": o["직전발주"],
+            "예상 재고": [_qty(round(r, 1), u) if pd.notna(r) else "" for r, u in zip(o["재고"], o["단위"])], "재고 주의": o["재고주의"],
             "발주 확률": (o["확률"] * 100).round(), "시즌": o["시즌"], "근거": o["사유"]})
         view_cols = [c for c in df.columns if c not in ("거래처", "근거")]
         st.button(f"구매청구 만들기 ({len(reqs)}건)", icon=":material/add_shopping_cart:", on_click=add_engine_requests, args=(reqs,), disabled=not reqs,
@@ -564,7 +575,7 @@ def po_engine(leaf: Leaf):
             st.markdown(f"**검증 결과** (학습 {ev['학습기간']} → 학습에 쓰지 않은 {ev['검증기간']}, {ev['판단건수']:,}건)\n\n"
                         f"- 발주 시점 정확도(F1): **{t_['엔진']['F1'] * 100:.0f}%** (단순 규칙 {t_['간격규칙']['F1'] * 100:.0f}%) — 추천한 것 중 {t_['엔진']['정밀도'] * 100:.0f}%가 실제 발주, 실제 발주의 {t_['엔진']['재현율'] * 100:.0f}%를 포착\n"
                         f"- 발주 수량 오차: **{ev['수량']['엔진']:.0f}%** (평소 주문량 그대로 {ev['수량']['직전4회']:.0f}%)")
-        st.caption(f"학습 자료 {e.last:%Y-%m-%d}까지 · 수량은 '1팩·2팩' 같은 주문 단위라 오차를 크게 줄이기 어렵습니다. 재고가 연결되면 정확도가 올라갑니다.")
+        st.caption(f"학습 자료 {e.last:%Y-%m-%d}까지 · 수량은 '1팩·2팩' 같은 주문 단위라 오차를 크게 줄이기 어렵습니다. 월말 실사재고를 더해 봐도 발주 시점 정확도는 오르지 않았고(2026 검증), 재고는 주문 간격이 긴 품목의 판단과 '재고 넉넉' 주의에 씁니다.")
 
 
 # ---------------- 입고관리 ----------------

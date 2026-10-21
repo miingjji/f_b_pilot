@@ -15,6 +15,7 @@ import pandas as pd
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "cleaned"
 LEDGER = DATA / "수불부"
+CARRYOVER_FLAG = 1_000_000      # 전월 기말과 당월 기초가 이만큼(원) 넘게 다르면 비고에 표시
 
 
 def _read(path: Path) -> pd.DataFrame:
@@ -62,6 +63,9 @@ def main() -> int:
     out["객수_차이(수불-POS)"] = out["수불_객수"] - out["POS_객수"]
     out["입고_차이(수불-POS공급가)"] = out["수불_입고_구매"] - out["POS_입고_공급가"]
     out["입고_비율(수불/POS공급가)"] = out["수불_입고_구매"] / out["POS_입고_공급가"]
+    big = out["이월_차이(전월기말-당월기초)"].abs() > CARRYOVER_FLAG
+    out["비고"] = ""
+    out.loc[big, "비고"] = "기초재고 재설정 가능성 (전월 기말과 100만원 넘게 다름)"
     path = LEDGER / "POS_대조_월별.csv"
     out.round(4).to_csv(path, index=False, encoding="utf-8-sig")
     print(f"저장: {path}")

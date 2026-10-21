@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from prep import clean_sales, sales_sheets, stock_sheets, summary_sheets
+from prep import clean_sales, sales_sheets, stock_sheets, summary_sheets, waste_sheet
 from prep.blocks import make_check
 from prep.md_tables import read_sheets
 
@@ -29,6 +29,7 @@ CLEANERS = [
     ("실사재고", stock_sheets.SHEET_COUNT, stock_sheets.clean_inventory_count),
     ("입고내역", stock_sheets.SHEET_RECEIVING, stock_sheets.clean_receiving),
     ("수불요약", summary_sheets.SHEET_SUMMARY, summary_sheets.clean_summary),
+    ("타_폐기", waste_sheet.SHEET_WASTE, waste_sheet.clean_waste),
 ]
 
 
