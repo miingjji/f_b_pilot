@@ -1,11 +1,11 @@
 """실제 데이터 기반 앱 마스터(data/real/items.csv, suppliers.csv) 만들기.
 
-    python -m prep.app_master [--src data/f_b_menu_data.md] [--out data/real]
+    python -m prep.app_master [--src data/source/수불부/2026-09.md] [--out data/real]   (기본: 가장 최근 달의 수불부)
     FB_MASTER=real streamlit run app.py        # 이 마스터로 앱 실행
 
 정리된 업체·품목 표(prep.organize)를 앱의 마스터 형식으로 바꾼다. 파일에 없는 값은 가상으로 채우고, 출처 열을 남긴다.
 
-  일 소비량   ① 표준사용량(g) 시트의 재료별 합계 ÷ 31일 (실제 근거)  ② 이번 달 입고량 ÷ 31일 (입고 기반 추정)
+  일 소비량   ① 표준사용량(g) 시트의 재료별 합계 ÷ 그 달 일수 (실제 근거)  ② 이번 달 입고량 ÷ 그 달 일수 (입고 기반 추정)
               ③ 재고만 있는 품목은 재고 ÷ 30일 (가상)  ④ 근거가 없으면 0 (소비 없음)
   현재 재고   실사재고. 단, 실사에서 0으로만 잡힌 소모품 중 쓰는 품목은 일 소비량 × 10~30일 (가상)
   안전 재고   일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) — 정책 값
@@ -13,7 +13,9 @@
   리드타임    prep.organize 의 적용 리드타임 (아워홈만 실제 태그, 나머지 가상)
 """
 import argparse
+import calendar
 import math
+import re
 import zlib
 from itertools import combinations
 from pathlib import Path
@@ -26,7 +28,7 @@ from prep.md_tables import read_sheets
 from prep.organize import build_all
 
 SHEET_STD = "표준사용량(g)"
-DAYS = 31                                    # 2025년 12월
+DAYS = 31                                    # 월 일수 기본값 (2025년 12월). 파일 이름이 YYYY-MM 이면 그 달 일수를 쓴다
 WEEKDAYS = "월화수목금토"
 STOCK_ONLY_COVER_DAYS = 30                   # 재고만 있고 사용 근거가 없는 품목의 가상 소비 (재고가 30일치라고 가정)
 SYNTH_STOCK_DAYS = (10, 30)                  # 실사에서 0으로 잡힌 소모품의 가상 재고 일수 범위
@@ -82,7 +84,13 @@ def read_standard_usage(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- 변환
-def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame):
+def days_in_source(src) -> int:
+    """수불부 파일 이름(YYYY-MM.md)의 그 달 일수. 이름에 달이 없으면 DAYS."""
+    m = re.fullmatch(r"(\d{4})-(\d{2})", Path(src).stem)
+    return calendar.monthrange(int(m[1]), int(m[2]))[1] if m else DAYS
+
+
+def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS):
     """(품목 표, 업체 표, 요약). 품목 표는 master.py 가 읽는 형식 + 출처 열."""
     std_map = dict(zip(std["코드"], std["이론사용_g"]))
     sup = suppliers.set_index("업체명")
@@ -99,9 +107,9 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
         theory = float(std_map.get(r["품목코드_RMS"], 0.0))
 
         if theory > 0:
-            usage, usage_src = theory / DAYS, "표준사용량"
+            usage, usage_src = theory / days, "표준사용량"
         elif recv > 0:
-            usage, usage_src = recv / DAYS, "입고 기반 추정"
+            usage, usage_src = recv / days, "입고 기반 추정"
         elif stock > 0:
             usage, usage_src = stock / STOCK_ONLY_COVER_DAYS, "가상"
         else:
@@ -144,7 +152,7 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
 def build_from_markdown(src):
     sheets = read_sheets(src)
     tables, _ = build_all(src, sheets=sheets)
-    return build_app_master(tables["업체별_품목"], tables["업체_마스터"], read_standard_usage(sheets[SHEET_STD]))
+    return build_app_master(tables["업체별_품목"], tables["업체_마스터"], read_standard_usage(sheets[SHEET_STD]), days_in_source(src))
 
 
 README = """# 실제 데이터 기반 앱 마스터
@@ -156,7 +164,7 @@ README = """# 실제 데이터 기반 앱 마스터
 | 항목 | 실제 근거 | 가상/추정 |
 |---|---|---|
 | 품목·규격·업체·재고(식재료) | 정리된 실사재고·입고내역 | |
-| 일 소비량 | `표준사용량` (표준사용량(g) 시트 합계 ÷ 31일) | `입고 기반 추정`(입고량 ÷ 31일), `가상`(재고 ÷ 30일), `근거 없음`(0) |
+| 일 소비량 | `표준사용량` (표준사용량(g) 시트 합계 ÷ 그 달 일수) | `입고 기반 추정`(입고량 ÷ 그 달 일수), `가상`(재고 ÷ 30일), `근거 없음`(0) |
 | 현재 재고 | `실사재고` | 실사에서 0으로 잡힌 소모품 중 쓰는 품목: `가상`(일 소비량 × 10~30일) |
 | 안전 재고 | | 정책 값: 일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) |
 | 리드타임 | 아워홈만 품명 태그 | 나머지 `가상` (업체 유형·취급 구분 기준) |
@@ -180,7 +188,8 @@ def write_master(items: pd.DataFrame, suppliers: pd.DataFrame, out) -> list[Path
 def main(argv=None) -> int:
     data = Path(__file__).resolve().parent.parent / "data"
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--src", default=str(data / "f_b_menu_data.md"))
+    months = sorted((data / "source" / "수불부").glob("20??-??.md"))
+    ap.add_argument("--src", default=str(months[-1] if months else data / "f_b_menu_data.md"), help="월별 수불부 (기본: 가장 최근 달)")
     ap.add_argument("--out", default=str(data / "real"))
     a = ap.parse_args(argv)
     items, sup, info = build_from_markdown(a.src)

@@ -149,7 +149,9 @@ def build_supplier_items(rec: pd.DataFrame, cnt: pd.DataFrame) -> pd.DataFrame:
         return (lt[0], lt[1], "품명 태그") if lt else (0, 0, NO_INFO)
 
     rows = []
+    row_of_code: dict = {}                                     # 입고 품목의 코드 -> rows 위치 (실사재고에 같은 코드가 두 줄일 때 합치는 데 쓴다)
     for i, r in rec.iterrows():
+        row_of_code.setdefault(r["품목코드_RMS"], len(rows))
         stock = cnt.loc[stock_of[i]] if i in stock_of else None
         tag, clean = split_tag(r["품명"])
         s_lead, b_lead, how = lead(tag)
@@ -172,6 +174,12 @@ def build_supplier_items(rec: pd.DataFrame, cnt: pd.DataFrame) -> pd.DataFrame:
         })
     for idx, s in cnt.iterrows():                              # 실사재고에만 있는 품목 (입고내역에 연결되지 않은 것)
         if idx in used:
+            continue
+        pos = row_of_code.get(s["품목코드_RMS"]) if s["품목코드_RMS"] != "없음" else None
+        if pos is not None:                                    # 같은 코드가 실사재고에 두 줄 이상: 새 품목으로 늘리지 않고 입고 품목의 재고에 더한다
+            rows[pos]["실사재고수량"] += float(s["재고실사_수량"])
+            rows[pos]["실사재고중량_g"] += float(s["재고실사_중량_g"])
+            rows[pos]["실사재고_있음"] = True
             continue
         tag, clean = split_tag(s["품명"])
         s_lead, b_lead, how = lead(tag)

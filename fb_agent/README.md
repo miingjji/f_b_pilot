@@ -21,7 +21,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-`data/real/`(실제 매장 데이터 기반 마스터, 품목 903개·거래처 45곳)이 저장소에 들어 있어서 **`streamlit run app.py`만 실행해도 실제 데이터 기반으로 뜹니다.**
+`data/real/`(실제 매장 데이터 기반 마스터, 품목 855개(2026-09 실사 기준)·거래처 45곳)이 저장소에 들어 있어서 **`streamlit run app.py`만 실행해도 실제 데이터 기반으로 뜹니다.**
 `data/real/`이 없으면 샘플 마스터(28개)로 자동 전환됩니다. 직접 고르려면:
 
 ```bash
