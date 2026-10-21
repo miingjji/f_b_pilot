@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (FB_MASTER=sample 고정)
 import unittest
 from pathlib import Path
 
@@ -37,6 +38,15 @@ BODY = [
     [NA, "저장품", NA, NA, NA, "다와", "죽용기", "300ea/box", "과세", "1", NA, "0"],          # 코드 없음
     [NA, "원재료", "0101010137", "8060145DM", "1000999", "아워홈", "떡국떡", "1kg", "면세", "1000", "0.12", "120"],
 ]
+
+
+class UncountedRow(unittest.TestCase):
+    def test_row_without_count_becomes_zero(self):
+        body = BODY[:1] + [[NA, "저장품", "0301010546", NA, NA, "포장가게", "투명 3OZ 용기", "1BOX/3000EA", NA, NA, NA, NA]]
+        clean, report, info = clean_inventory_count(count_sheet(body, total=("합 계", 3.76, 1880.0)))
+        self.assertEqual(clean.iloc[1][["환산단위", "재고실사_수량", "재고실사_중량_g"]].tolist(), [1.0, 0.0, 0.0])
+        self.assertEqual(int(clean.isna().sum().sum()), 0)
+        self.assertTrue(all(c["ok"] for c in info["checks"]), info["checks"])
 
 
 class Labels(unittest.TestCase):
@@ -132,7 +142,7 @@ def receiving_sheet(body, days=2, summary_total=None):
 
 def rec_row(account, rms, code_ck, supplier, name, spec, tax, unit, order, diff, total, days):
     """total=(수량, 중량, 금액); days=[(수량, 중량, 금액), ...]"""
-    row = ["CK과세", account, rms, code_ck, NA, supplier, name, spec, tax, "1.5", "750", unit, NA, order, diff]
+    row = [f"{supplier}{tax}" if tax is not NA else "CK", account, rms, code_ck, NA, supplier, name, spec, tax, "1.5", "750", unit, NA, order, diff]
     row += [NA if v is None else str(v) for v in total]
     for d in days:
         row += [NA if v is None else str(v) for v in d]
@@ -187,7 +197,7 @@ class Receiving(unittest.TestCase):
 
     def test_totals_match_summary_row(self):
         checks = {c["항목"]: c for c in self.info["checks"]}
-        self.assertTrue(all(c["ok"] for c in checks.values()), checks)
+        self.assertTrue(all(c["ok"] for c in checks.values() if not c["참고"]), checks)
         self.assertIn("당월합계_금액 합계", checks)
         _, _, bad = clean_receiving(receiving_sheet(REC_BODY, days=2, summary_total=(14, 61505, 99999)))
         self.assertFalse(all(c["ok"] for c in bad["checks"]))
@@ -201,10 +211,27 @@ class Receiving(unittest.TestCase):
         self.assertEqual(int(self.report["채운 개수"].sum()), int(kept.isna().sum().sum()))
 
     def test_unexplained_missing_is_rejected(self):
-        bad = [rec_row("반제품", "R1", NA, "CK", "게살", "500g/pk", "과세", "500", NA, "-3", (3, 1500, None), [(2, 1000, 3000), (1, 500, 1500)])]
+        row = rec_row("반제품", "R1", NA, "CK", "게살", "500g/pk", "과세", "500", NA, "-3", (3, 1500, None), [(2, 1000, None), (1, 500, 1500)])
+        row[9] = row[10] = NA                                                      # 단가를 알 수 없으면 일자 금액도 계산할 수 없다
         with self.assertRaises(UnhandledMissingError) as cm:
-            clean_receiving(receiving_sheet(bad))
+            clean_receiving(receiving_sheet([row]))
         self.assertIn("당월합계_금액", str(cm.exception))
+
+    def test_blank_day_weight_is_filled_and_source_total_difference_is_noted(self):
+        # 1일 중량이 빈칸(수량 2, 환산단위 500 -> 1000g). 원본 당월합계 중량은 그 날을 빼고 500 으로 적혀 있다.
+        row = rec_row("반제품", "R1", NA, "CK", "게살", "500g/pk", "과세", "500", NA, "-3", (3, 500, 4500), [(2, None, 3000), (1, 500, 1500)])
+        clean, report, info = clean_receiving(receiving_sheet([row]))
+        self.assertEqual(clean["1일_중량_g"].tolist(), [1000.0])
+        self.assertEqual(clean["당월합계_중량_g"].tolist(), [500.0])               # 원본 합계는 고치지 않음
+        self.assertTrue(any("당월합계_중량이 일자 합보다 작은 행 1개" in n for n in info["notes"]))
+        self.assertTrue(all(c["ok"] for c in info["checks"] if not c["참고"]), info["checks"])
+
+    def test_missing_totals_and_group_are_derived(self):
+        row = rec_row("원재료", "R2", "C2", "롯데", "사이다", NA, "과세", "10000", "6", NA, (None, None, None), [(None, 0, 0), (6, 60000, 9000)])
+        row[0] = NA
+        clean, report, info = clean_receiving(receiving_sheet([row]))
+        self.assertEqual(clean["구분"].tolist(), ["롯데과세"])
+        self.assertEqual(clean[["당월합계_수량", "당월합계_중량_g", "당월합계_금액", "차이"]].iloc[0].tolist(), [6.0, 60000.0, 9000.0, 0.0])
 
 
 REAL = Path(__file__).resolve().parent / "data" / "f_b_menu_data.md"
@@ -229,7 +256,7 @@ class RealFile(unittest.TestCase):
         clean, report, info = clean_receiving(self.sheets[SHEET_RECEIVING])
         self.assertEqual(len(clean), 894)
         self.assertEqual(int(clean.isna().sum().sum()), 0)
-        failed = [c for c in info["checks"] if not c["ok"]]
+        failed = [c for c in info["checks"] if not c["ok"] and not c["참고"]]
         self.assertEqual(failed, [], failed)
         self.assertEqual(round(clean["당월합계_금액"].sum(), 4), 48880256.4209)
 

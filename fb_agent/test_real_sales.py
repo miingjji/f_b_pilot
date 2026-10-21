@@ -1,4 +1,5 @@
 """FB_MASTER=real 에서 매출 화면이 실제 매출(수원점 2025-12)을 쓰는지 검증. 환경변수는 import 시점에 정해지므로 별도 프로세스에서 실행한다."""
+import testenv  # noqa: F401  (FB_MASTER=sample 고정)
 import json
 import os
 import subprocess
@@ -7,7 +8,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-HAS_DATA = (ROOT / "data" / "cleaned" / "매출입력_정제.csv").exists() and (ROOT / "data" / "organized" / "일자별_매출.csv").exists()
+HAS_DATA = (ROOT / "data" / "cleaned" / "수불부" / "2025" / "2025-12" / "매출입력_정제.csv").exists() and (ROOT / "data" / "organized" / "일자별_매출.csv").exists()
 
 PROBE = r"""
 import json, sys
@@ -46,7 +47,20 @@ out["sat_over_mon"] = float(wk[5] / wk[0])
 out["real_sat_over_mon"] = float(sd.daily_sales(st, end, 31).groupby(lambda i: date(2025, 12, 1 + i).weekday())["sales"].median()[5]
                                   / sd.daily_sales(st, end, 31).groupby(lambda i: date(2025, 12, 1 + i).weekday())["sales"].median()[0])
 out["days_2026"] = int(len(d26)); out["min_2026"] = int(d26["sales"].min())
-out["holiday_lift"] = float(sd.day_sales(st, date(2026, 2, 17))["sales"] / sd.day_sales(st, date(2026, 2, 10))["sales"])   # 설날(화) vs 평소 화요일
+import real_sales as rs
+t26 = rs.totals_2026()
+out["net_2026_ok"] = all(int(sd.day_sales(st, x)["sales"]) == int(v) for x, v in t26["순매출"].items())
+sm = rs.settle_2026()
+jan = sd.payment_share(st, date(2026, 1, 1), date(2026, 1, 31)).set_index("결제수단")["금액"]
+out["jan_card_share"] = float((jan["신용카드"] + jan["간편결제"]) / jan.sum()); out["jan_card_real"] = float(sm.loc["2026-01", "신용카드"] / sm.loc["2026-01", "실매출"])
+out["jan_cust"] = int(t26.loc[[x for x in t26.index if x.month == 1], "객수"].sum()); out["jan_cust_real"] = int(sm.loc["2026-01", "객수"])
+jh = sum(sd.hourly_sales(st, date(2026, 1, i))["sales"].sum() for i in range(1, 32)); out["jan_hour_gap"] = abs(int(jh) - int(sm.loc["2026-01", "순매출"]))
+bands = {k: 0.0 for k in rs.settle_band_share(date(2026, 1, 3))}
+for i in range(2, 32):
+    h = sd.hourly_sales(st, date(2026, 1, i))
+    for (lo, hi) in bands: bands[(lo, hi)] += float(h[(h["hour"] >= lo) & (h["hour"] <= hi)]["sales"].sum())
+out["jan_band_gap"] = max(abs(v / sum(bands.values()) - rs.settle_band_share(date(2026, 1, 3))[k]) for k, v in bands.items())
+out["closed_ok"] = all(int(sd.day_sales(st, x)["sales"]) == 0 for x in t26.index[t26["영업여부"] == "무매출일"])
 out["deterministic"] = sd.day_sales(st, date(2026, 5, 5)) == sd.day_sales(st, date(2026, 5, 5))
 out["hours_2026_total"] = int(sd.hourly_sales(st, date(2026, 3, 3))["sales"].sum()); out["day_2026"] = int(sd.day_sales(st, date(2026, 3, 3))["sales"])
 out["virtual_menu_names"] = list(sd.menu_series("강남점", date(2026, 3, 3), "day", 3).columns)[:2]
@@ -105,13 +119,19 @@ class RealSales(unittest.TestCase):
         self.assertTrue(self.r["virtual_ok"])
         self.assertNotIn("짜장면", self.r["virtual_menu_names"])
 
-    def test_2026_is_filled_with_weekday_pattern_of_the_real_month(self):
+    def test_2026_uses_real_daily_sales_and_keeps_weekday_pattern(self):
         self.assertGreaterEqual(self.r["days_2026"], 200)
-        self.assertGreater(self.r["min_2026"], 0)
+        self.assertTrue(self.r["net_2026_ok"])                                           # 실제 일자별 순매출과 화면 값이 같다
+        self.assertTrue(self.r["closed_ok"])                                             # 설날·추석·휴무 등 무매출일은 0원
         self.assertGreater(self.r["sat_over_mon"], 2)                                     # 토요일이 월요일보다 훨씬 큼 (실제 12월도 같은 패턴)
         self.assertGreater(self.r["real_sat_over_mon"], 2)
-        self.assertGreater(self.r["holiday_lift"], 1.0)                                  # 설날이 평소 같은 요일보다 큼
         self.assertTrue(self.r["deterministic"])
+
+    def test_2026_payment_customers_and_hours_follow_the_monthly_settlement(self):
+        self.assertAlmostEqual(self.r["jan_card_share"], self.r["jan_card_real"], delta=0.002)   # 결제수단 구성비 = 그 달 정산 값
+        self.assertAlmostEqual(self.r["jan_cust"], self.r["jan_cust_real"], delta=15)            # 일별 객수 합 ≈ 그 달 실제 객수
+        self.assertLess(self.r["jan_hour_gap"], 3000)                                            # 시간대 합 = 그 달 순매출
+        self.assertLess(self.r["jan_band_gap"], 0.03)                                            # 시간대 구간 비중 ≈ 정산의 구간 비중 (요일 가중·잡음 허용)
 
     def test_virtual_hours_add_up_to_the_virtual_day(self):
         self.assertAlmostEqual(self.r["hours_2026_total"], self.r["day_2026"], delta=self.r["day_2026"] * 0.01)

@@ -11,6 +11,7 @@ from insights import build_alerts
 from menu import Leaf, breadcrumb
 from routing import go
 from state import get_calendar, get_recs, get_store, get_today
+from unit_info import qty_for
 from views import register
 from views.common import kpis, pct_delta, sample_notice, won
 
@@ -37,7 +38,7 @@ def report(leaf: Leaf):
     lines = [f"**{store} 주간 운영 요약 ({today - timedelta(days=6):%m/%d}~{today:%m/%d})**", "",
              f"- 매출 {won(s_now)} (전주 대비 {pct_delta(s_now, s_prev)}), 객단가 {won(ticket)}",
              f"- 인건비율 {l_pct:.1f}%"]
-    lines += [f"- 발주 필요: {r.item} ({r.supplier}, {r.order_packs}PK, {r.status})" for r in todo] or ["- 발주 필요 품목 없음"]
+    lines += [f"- 발주 필요: {r.item} ({r.supplier}, {qty_for(r.item, r.order_packs)}, {r.status})" for r in todo] or ["- 발주 필요 품목 없음"]
     lines += [f"- 주의: {a.title} — {a.detail}" for a in alerts] or ["- 감지된 이상징후 없음"]
     text = "\n".join(lines)
 

@@ -64,7 +64,7 @@ def main():
             br = p.chromium.launch()
 
             pg, errs = open_page(br, url)
-            check(pg.get_by_text("실제 데이터 기반 · 품목 903개").count() >= 1, "사이드바에 데이터 종류 표시 (실제 데이터 기반 · 품목 903개)")
+            check(pg.get_by_text("실제 데이터 기반 · 품목 855개").count() >= 1, "사이드바에 데이터 종류 표시 (실제 데이터 기반 · 품목 855개)")
             check(pg.locator('[data-testid="stSelectbox"] input').first.input_value() == "수원점", "매장 선택이 수원점(실제 재고의 매장)")
             pg.screenshot(path=out / "real_01_home.png")
             check(not errs, "홈: JS 에러 없음")
@@ -82,15 +82,15 @@ def main():
             pg.context.close()
 
             pg, errs = open_page(br, url, "/stock-input")
-            check(pg.get_by_text("903개 표시 / 전체 903개").count() == 1, "재고 입력: 903개 표시")
+            check(pg.get_by_text("855개 표시 / 전체 855개").count() == 1, "재고 입력: 855개 표시")
             pg.locator('[data-testid="stButtonGroup"]').get_by_text("저장품", exact=True).click()
             pg.wait_for_timeout(2500)
-            check(pg.get_by_text(re.compile(r"개 표시 / 전체 903개")).count() == 1 and pg.get_by_text("903개 표시").count() == 0, "분류 '저장품' 필터가 적용됨")
+            check(pg.get_by_text(re.compile(r"개 표시 / 전체 855개")).count() == 1 and pg.get_by_text("855개 표시").count() == 0, "분류 '저장품' 필터가 적용됨")
             pg.screenshot(path=out / "real_03_stock_input.png")
             pg.context.close()
 
             pg, errs = open_page(br, url, "/set-items")
-            check(pg.get_by_text("903개 / 전체 903개").count() == 1, "품목 마스터: 903개")
+            check(pg.get_by_text("855개 / 전체 855개").count() == 1, "품목 마스터: 855개")
             check(pg.get_by_text("가상 값").count() >= 1, "품목 마스터: 가상 값 안내")
             pg.screenshot(path=out / "real_04_item_master.png")
             pg.context.close()

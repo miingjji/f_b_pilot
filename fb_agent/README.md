@@ -21,13 +21,15 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-실제 매장 데이터 기반 마스터(품목 903개·거래처 45곳)로 실행하려면 (원본 마크다운이 `data/f_b_menu_data.md`에 있어야 함):
+`data/real/`(실제 매장 데이터 기반 마스터, 품목 855개(2026-09 실사 기준)·거래처 45곳)이 저장소에 들어 있어서 **`streamlit run app.py`만 실행해도 실제 데이터 기반으로 뜹니다.**
+`data/real/`이 없으면 샘플 마스터(28개)로 자동 전환됩니다. 직접 고르려면:
 
 ```bash
-./run_real.sh            # data/real/ 이 없으면 python -m prep.app_master 로 만든 뒤 FB_MASTER=real 로 실행
+FB_MASTER=sample streamlit run app.py   # 샘플 마스터 (소모품 28개)
+FB_MASTER=real streamlit run app.py     # 실제 기반 마스터 강제 (없으면 안내 오류)
+./run_real.sh                           # data/real/ 이 없으면 python -m prep.app_master 로 만든 뒤 실행
 ```
-
-기본은 샘플 마스터이고, `FB_MASTER=real`일 때만 실제 기반 마스터를 씁니다. 일소비량·발주 요일·리드타임·일부 재고는 가상 값이며
+ 일소비량·발주 요일·리드타임·일부 재고는 가상 값이며
 매출 화면은 수원점 2025-12 실제 매출을 씁니다 (원본이 없는 날짜·매장은 실제 12월의 요일·시간대 패턴을 따른 가상 값, 기준일 기본값은 오늘). 출처는 `data/real/items.csv`의 `*_출처` 열에 있습니다 ([docs/DATA_CLEANING.md](docs/DATA_CLEANING.md)).
 
 CLI로 한 품목만 계산: `python main.py 짜사이 "1pk 300g"`
@@ -76,5 +78,5 @@ python e2e/check_ui.py    # 실제 브라우저 점검 (e2e/README.md 참고)
 - **F&B Agent는 LLM이 아닙니다.** 앱 데이터에 키워드로 답하는 규칙 기반이며, LLM을 붙일 때는 `agent.answer()`만 교체하면 됩니다.
 - **로그인은 데모입니다.** 이름·이메일만 받고 비밀번호는 받지 않습니다. `.streamlit/secrets.toml`에 `[auth]`(OIDC)를 설정하면 `st.login()`으로 자동 전환됩니다.
 - **일정은 세션에만 저장됩니다.** 새로고침하면 샘플 일정으로 돌아갑니다.
-- **매출·근태 화면은 샘플 데이터**입니다(화면에 표시). POS/근태 연동 전까지 `sample_data.py`가 채웁니다.
+- **매출·근태 화면:** 실제 모드에서 매출은 수원점 2025-12 실제 값이고 그 밖의 날짜는 가상, 근태는 가상입니다(화면에 표시). 샘플 모드는 모두 `sample_data.py`가 채웁니다.
 - 이동 중 위젯 상태 문제 등 설계 배경은 `docs/LAYOUT.md`에 정리했습니다.

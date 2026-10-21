@@ -64,9 +64,9 @@ def ensure_no_missing(df: pd.DataFrame):
         raise UnhandledMissingError("규칙이 없는 결측치가 남았습니다: " + ", ".join(f"{c} {int(n)}개" for c, n in left.items()))
 
 
-def make_check(name: str, expected, actual, ok: bool | None = None, note: bool = False) -> dict:
+def make_check(name: str, expected, actual, ok: bool | None = None, note: bool = False, abs_tol: float = 1e-6) -> dict:
     """검증 결과 한 줄. note=True 면 '원본 데이터의 차이를 알리는 참고'라 실패해도 정제 오류로 취급하지 않는다."""
-    close = math.isclose(float(expected), float(actual), rel_tol=1e-9, abs_tol=1e-6)
+    close = math.isclose(float(expected), float(actual), rel_tol=1e-9, abs_tol=abs_tol)
     return {"항목": name, "기대": expected, "실제": actual, "ok": close if ok is None else ok, "참고": note}
 
 

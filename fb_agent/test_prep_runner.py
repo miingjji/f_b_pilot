@@ -1,3 +1,4 @@
+import testenv  # noqa: F401  (FB_MASTER=sample 고정)
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,7 +46,7 @@ class CrossChecks(unittest.TestCase):
         self.assertEqual(cross_checks({}), [])
 
     def test_registry_covers_five_sheets_in_order(self):
-        self.assertEqual([n for n, _, _ in CLEANERS], ["매출입력", "판매및할인", "실사재고", "입고내역", "수불요약"])
+        self.assertEqual([n for n, _, _ in CLEANERS], ["매출입력", "판매및할인", "실사재고", "입고내역", "수불요약", "타_폐기"])
 
 
 @unittest.skipUnless(REAL.exists(), "실제 데이터 파일이 없으면 건너뜀")

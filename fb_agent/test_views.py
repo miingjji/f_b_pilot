@@ -1,4 +1,5 @@
 """소메뉴 화면이 모두 예외 없이 그려지는지 확인 (AppTest, 매장별)."""
+import testenv  # noqa: F401  (FB_MASTER=sample 고정)
 import unittest
 
 from streamlit.testing.v1 import AppTest

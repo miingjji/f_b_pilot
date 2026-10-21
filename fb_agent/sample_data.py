@@ -53,6 +53,11 @@ def _real(store: str, d: date | None = None) -> bool:
     return _real_mode() and store == rs.REAL_STORE and (d is None or rs.has(d))
 
 
+def _real_total(store: str, d: date) -> bool:
+    """영수증 단위가 아니라 일자별 합계만 실제인 날(2026-01~09). 일 매출·정산은 실제, 시간대·메뉴·결제·영수증은 그 합계에 맞춘 가상 값."""
+    return _real_mode() and store == rs.REAL_STORE and rs.has_total(d)
+
+
 @lru_cache(maxsize=1)
 def _real_mix() -> tuple[list, list]:
     """실제 12월 매출의 (메뉴 [(이름, 평균단가, 비중)], 결제 [(이름, 비중)])."""
@@ -116,6 +121,10 @@ def day_sales(store: str, d: date) -> dict:
         row = rs.daily().loc[d]
         return {"date": d, "sales": int(row["순매출"]), "customers": int(row["객수"]),
                 "ticket": int(row["순매출"] / max(1, row["객수"]))}
+    if _real_total(store, d):
+        row = rs.totals_2026().loc[d]
+        return {"date": d, "sales": int(row["순매출"]), "customers": int(row["객수"]),
+                "ticket": int(row["순매출"] / row["객수"]) if row["객수"] else 0}
     if _real_mode():
         return _virtual_real_day(store, d)
     r = _rng(store, d.toordinal())
@@ -142,6 +151,17 @@ def monthly_sales(store: str, end: date, months: int = 12) -> pd.DataFrame:
     return m
 
 
+def _band_weights(d: date, base) -> "np.ndarray":
+    """OPEN_HOURS 별 비중: 월별 정산의 구간(10~13시·14~17시·18~21시) 실매출 비중 × 구간 안 base 모양. 영업시간(11~21시)은 세 구간에 모두 들어간다."""
+    share = rs.settle_band_share(d)
+    w = np.zeros(len(OPEN_HOURS))
+    for (lo, hi), v in share.items():
+        idx = [i for i, h in enumerate(OPEN_HOURS) if lo <= h <= hi]
+        if idx:
+            w[idx] = v * base[idx] / base[idx].sum()
+    return w
+
+
 def hourly_sales(store: str, d: date) -> pd.DataFrame:
     """시간대별 매출·객수."""
     if _real(store, d):
@@ -149,11 +169,13 @@ def hourly_sales(store: str, d: date) -> pd.DataFrame:
     day = day_sales(store, d)
     r = _rng(store, d.toordinal(), "hour")
     base = _real_profile()["hours"]["we" if d.weekday() >= 5 else "wk"] if _real_mode() else HOUR_PROFILE
+    if _real_total(store, d) and rs.has_settle(d):
+        base = _band_weights(d, base)      # 그 달 실제 시간대 구간 비중에 맞추고, 구간 안은 12월 시간대 모양을 쓴다
     w = base * r.uniform(0.85, 1.15, len(OPEN_HOURS))
     w = w / w.sum()
     sales = (day["sales"] * w).round(-2)
     return pd.DataFrame({"hour": OPEN_HOURS, "sales": sales.astype(int),
-                         "customers": (sales / day["ticket"]).astype(int)})
+                         "customers": (sales / max(1, day["ticket"])).astype(int)})
 
 
 def menu_table(store: str, start: date, end: date) -> pd.DataFrame:
@@ -236,6 +258,8 @@ def _pay_day(store: str, d: date) -> dict:
     if _real(store, d):
         return rs.pay_amounts(d)
     sales = day_sales(store, d)["sales"]
+    if _real_total(store, d) and rs.has_settle(d):
+        return {n: int(sales * share) for n, share in rs.settle_pay_mix(d).items()}      # 그 달 실제 결제수단 구성비
     r = _rng(store, d.toordinal(), "pay").uniform(0.95, 1.05, len(payments()))
     return {n: int(sales * share * x) for (n, share), x in zip(payments(), r)}
 
@@ -305,6 +329,8 @@ def cancellations(store: str, end: date, n: int = 40) -> pd.DataFrame:
 def receipts(store: str, d: date, n: int = 30) -> pd.DataFrame:
     if _real(store, d):
         return rs.receipts(d)
+    if _real_total(store, d) and rs.totals_2026().loc[d, "영수증수"] == 0:
+        return pd.DataFrame(columns=["영수증번호", "시각", "테이블", "금액", "결제수단"])
     r = _rng(store, d.toordinal(), "receipt")
     rows = []
     for i in range(n):
@@ -341,6 +367,9 @@ def settlement(store: str, end: date, days: int = 7) -> pd.DataFrame:
         for i, day in enumerate(d["date"].dt.date):
             if day in real.index:
                 out.loc[out.index[i], ["총매출", "할인", "순매출", "부가세"]] = [int(real.loc[day, c]) for c in ("총매출", "할인", "순매출", "부가세")]
+            elif _real_total(store, day):
+                t = rs.totals_2026()
+                out.loc[out.index[i], ["총매출", "할인", "순매출", "부가세"]] = [int(t.loc[day, c]) for c in ("총매출", "할인", "순매출", "부가세")]
     return out
 
 
