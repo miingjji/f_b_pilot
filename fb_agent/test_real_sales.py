@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-HAS_DATA = (ROOT / "data" / "cleaned" / "매출입력_정제.csv").exists() and (ROOT / "data" / "organized" / "일자별_매출.csv").exists()
+HAS_DATA = (ROOT / "data" / "cleaned" / "수불부" / "2025-12" / "매출입력_정제.csv").exists() and (ROOT / "data" / "organized" / "일자별_매출.csv").exists()
 
 PROBE = r"""
 import json, sys

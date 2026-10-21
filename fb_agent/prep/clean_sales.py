@@ -3,7 +3,7 @@
 이 시트의 빈칸(NaN)은 대부분 '해당 없음'이라는 뜻이라 dropna 로 지우면 모든 행이 사라진다.
 열의 성격별로 의미 있는 값으로 채우고, 규칙으로 설명되지 않는 결측은 조용히 채우지 않고 오류로 알린다.
 
-    python -m prep.clean_sales [--src data/f_b_menu_data.md] [--out data/cleaned]
+    python -m prep.clean_sales [--src data/f_b_menu_data.md] [--out data/cleaned/수불부/2025-12]
 """
 import argparse
 from pathlib import Path
@@ -82,7 +82,7 @@ def main(argv=None) -> int:
     data = Path(__file__).resolve().parent.parent / "data"
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--src", default=str(data / "f_b_menu_data.md"))
-    ap.add_argument("--out", default=str(data / "cleaned"))
+    ap.add_argument("--out", default=str(data / "cleaned" / "수불부" / "2025-12"))
     a = ap.parse_args(argv)
 
     print(f"읽는 중: {a.src}")

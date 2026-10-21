@@ -1,6 +1,6 @@
 """실제 매출 조회 (Streamlit 비의존). FB_MASTER=real 일 때 sample_data 가 이 모듈을 먼저 본다.
 
-원본은 `python -m prep`이 만든 data/cleaned/매출입력_정제.csv (딘타이펑 수원점 2025-12-01~31 영수증 행 단위).
+원본은 `python -m prep`이 만든 data/cleaned/수불부/2025-12/매출입력_정제.csv (딘타이펑 수원점 2025-12-01~31 영수증 행 단위).
 매출 기준은 정리 파일과 같다: 취소구분이 `정상`+`매출취소`인 행의 순매출 (판매및할인 시트와 일치하는 기준).
 `주문취소`·`메뉴정정`은 매출로 잡지 않고 취소 내역 화면에만 쓴다.
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-CLEANED = Path(__file__).resolve().parent / "data" / "cleaned" / "매출입력_정제.csv"
+CLEANED = Path(__file__).resolve().parent / "data" / "cleaned" / "수불부" / "2025-12" / "매출입력_정제.csv"
 CLEANED_2026 = Path(__file__).resolve().parent / "data" / "cleaned" / "2026" / "매출일자별_정제.csv"
 SETTLE_2026 = CLEANED_2026.with_name("정산_월별_정제.csv")          # `python -m prep.settlement_2026` 이 만든 월별 정산 (결제수단·시간대·객수)
 SETTLE_BANDS_2026 = CLEANED_2026.with_name("정산_시간대별_정제.csv")

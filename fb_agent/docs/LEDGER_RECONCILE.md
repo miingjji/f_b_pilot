@@ -8,7 +8,7 @@ python -m prep --only 실사재고 입고내역 수불요약 --src data/source/�
 python -m prep.ledger_reconcile      # data/cleaned/수불부/POS_대조_월별.csv
 ```
 
-`cleaned/수불부/2025-12/`는 기존 `cleaned/` 루트의 12월 파일과 내용이 같다 (바이트 단위로 확인).
+`cleaned/수불부/2025-12/`는 예전에 `cleaned/` 루트에 있던 12월 정제본을 옮긴 것이다 (내용 동일, 매출입력·판매및할인 포함).
 
 ## 정제 결과
 
