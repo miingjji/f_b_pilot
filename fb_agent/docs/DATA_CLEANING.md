@@ -1,7 +1,7 @@
 # 데이터 정제 (결측치 처리)
 
 `data/f_b_menu_data.md`(엑셀 18시트를 마크다운으로 덤프한 파일)의 결측치(`NaN`)를 시트별로 정리합니다.
-원본 파일은 수정하지 않고, 결과는 `data/cleaned/수불부/2025-12/`에 CSV로 저장합니다 (월별 수불부는 `data/cleaned/수불부/<YYYY-MM>/`, 상세는 `LEDGER_RECONCILE.md`) (`.gitignore` 처리: 실제 매장 데이터).
+원본 파일은 수정하지 않고, 결과는 `data/cleaned/수불부/2025/2025-12/`에 CSV로 저장합니다 (월별 수불부는 `data/cleaned/수불부/<연도>/<YYYY-MM>/`, 상세는 `LEDGER_RECONCILE.md`) (`.gitignore` 처리: 실제 매장 데이터).
 
 ```bash
 python -m prep                         # 등록된 시트 전부
@@ -121,7 +121,7 @@ python -m unittest test_prep test_prep_stock test_prep_sales test_prep_summary t
 
 ### 매출 화면 연결 (`real_sales.py`)
 
-`FB_MASTER=real`이면 매출분석 화면이 `data/cleaned/수불부/2025-12/매출입력_정제.csv`(`python -m prep`)를 읽습니다. 기준일 기본값은 실제 오늘이고, 실제 12월은 달력·날짜 선택으로 볼 수 있습니다 (설정 › 기준일에서 변경).
+`FB_MASTER=real`이면 매출분석 화면이 `data/cleaned/수불부/2025/2025-12/매출입력_정제.csv`(`python -m prep`)를 읽습니다. 기준일 기본값은 실제 오늘이고, 실제 12월은 달력·날짜 선택으로 볼 수 있습니다 (설정 › 기준일에서 변경).
 실제 데이터가 없는 날(2026년 등)은 실제 12월의 요일별 매출 중앙값에 월별 계절 계수, 공휴일 가산(×1.15), 매장 규모, 날짜별 잡음을 곱한 가상 값입니다. 매출 기준은 `정상`+`매출취소`의 순매출이며 `data/organized/일자별_매출.csv`와 일치합니다 (테스트 `test_real_sales.py`).
 
 | 화면 | 실제 | 가상 |

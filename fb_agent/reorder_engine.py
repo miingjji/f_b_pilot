@@ -41,7 +41,7 @@ LONG_GAP = 14           # 주문 간격 중앙값이 이보다 길면 재고 없
 WINDOW, SEASON_WINDOW = 180, 90   # 평소 매출·소비 속도를 보는 기간(일)
 SEASON_OFF_MONTHS = 4   # 최근 12개월 중 이 개월 이상 주문이 없으면 시즌 품목
 SEASON_RECENT = 45      # 시즌 품목이 이 기간 안에 주문했으면 성수기로 본다
-LEDGER = DATA / "수불부"      # 월별 수불부 정제본 (실사재고·입고내역)
+LEDGER = DATA / "수불부"      # 월별 수불부 정제본 (수불부/<연도>/<YYYY-MM>/ 실사재고·입고내역)
 STOCK_AMPLE = 4.0       # 추정 재고가 입고 전 예상 소비의 이 배수보다 크면 '재고 넉넉' 주의 (습관 발주의 적중률: 부족할 때 75~80% → 8배 넘을 때 47%)
 STALE_DAYS = 14         # 월말 실사로부터 이 기간 안의 날짜에만 재고 추정을 쓴다 (그 뒤는 입고·소비 추정 오차가 쌓인다)
 FEATURES = ["gapratio", "over", "dow", "lg", "ln", "since", "lscale"]
@@ -153,15 +153,15 @@ def load_counts(book: "Book", ledger_dir: Path | None = None) -> dict:
     95% 품목은 비율이 1 이다. 비율이 달마다 크게 흔들리거나 비교할 달이 없으면(박스 환산 등) 그 품목은 재고를 쓰지 않는다.
     """
     root = ledger_dir or LEDGER
-    months = sorted(p.name for p in root.glob("20*") if (p / "실사재고_정제.csv").exists())
+    months = sorted(p.name for p in root.glob("20*/20*") if (p / "실사재고_정제.csv").exists())
     if not months:
         return {}
     o = book.orders.assign(m=[f"{d:%Y-%m}" for d in book.orders["청구일자"]]).groupby(["품목코드_RMS", "m"])["수량"].sum()
     counts, ratios = {}, {}
     for m in months:
-        c = pd.read_csv(root / m / "실사재고_정제.csv", dtype={"품목코드_RMS": str})
+        c = pd.read_csv(root / m[:4] / m / "실사재고_정제.csv", dtype={"품목코드_RMS": str})
         c = c[c["품목코드_RMS"] != "없음"].groupby("품목코드_RMS")["재고실사_수량"].sum()
-        r = pd.read_csv(root / m / "입고내역_정제.csv", dtype={"품목코드_RMS": str}).groupby("품목코드_RMS")["당월합계_수량"].sum()
+        r = pd.read_csv(root / m[:4] / m / "입고내역_정제.csv", dtype={"품목코드_RMS": str}).groupby("품목코드_RMS")["당월합계_수량"].sum()
         for code, q in r[r > 0].items():
             if (code, m) in o.index:
                 ratios.setdefault(code, []).append(float(o[(code, m)]) / float(q))

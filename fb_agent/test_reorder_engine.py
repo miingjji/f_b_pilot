@@ -181,7 +181,7 @@ class StockFromCounts(unittest.TestCase):
 
 class LoadCounts(unittest.TestCase):
     def write_month(self, root: Path, ym: str, count_qty: float, receipt_qty: float, code="0001"):
-        d = root / ym
+        d = root / ym[:4] / ym
         d.mkdir(parents=True)
         pd.DataFrame({"품목코드_RMS": [code, "없음"], "재고실사_수량": [count_qty, 5.0]}).to_csv(d / "실사재고_정제.csv", index=False)
         pd.DataFrame({"품목코드_RMS": [code], "당월합계_수량": [receipt_qty]}).to_csv(d / "입고내역_정제.csv", index=False)

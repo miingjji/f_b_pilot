@@ -1,6 +1,6 @@
 """실제 데이터 기반 앱 마스터(data/real/items.csv, suppliers.csv) 만들기.
 
-    python -m prep.app_master [--src data/source/수불부/2026-09.md] [--out data/real]   (기본: 가장 최근 달의 수불부)
+    python -m prep.app_master [--src data/source/수불부/2026/2026-09.md] [--out data/real]   (기본: 가장 최근 달의 수불부)
     FB_MASTER=real streamlit run app.py        # 이 마스터로 앱 실행
 
 정리된 업체·품목 표(prep.organize)를 앱의 마스터 형식으로 바꾼다. 파일에 없는 값은 가상으로 채우고, 출처 열을 남긴다.
@@ -188,7 +188,7 @@ def write_master(items: pd.DataFrame, suppliers: pd.DataFrame, out) -> list[Path
 def main(argv=None) -> int:
     data = Path(__file__).resolve().parent.parent / "data"
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    months = sorted((data / "source" / "수불부").glob("20??-??.md"))
+    months = sorted((data / "source" / "수불부").glob("20??/20??-??.md"))
     ap.add_argument("--src", default=str(months[-1] if months else data / "f_b_menu_data.md"), help="월별 수불부 (기본: 가장 최근 달)")
     ap.add_argument("--out", default=str(data / "real"))
     a = ap.parse_args(argv)

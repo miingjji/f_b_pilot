@@ -1,6 +1,6 @@
 """월별 수불부와 POS 리포트를 대조한다:  python -m prep.ledger_reconcile
 
-수불부 정제본(data/cleaned/수불부/<YYYY-MM>/)과 POS 정제본(data/cleaned/<연도>/)에서 월마다 같은 항목을 나란히 놓고,
+수불부 정제본(data/cleaned/수불부/<연도>/<YYYY-MM>/)과 POS 정제본(data/cleaned/<연도>/)에서 월마다 같은 항목을 나란히 놓고,
 data/cleaned/수불부/POS_대조_월별.csv 에 저장한다. 어느 쪽 값이 맞는지는 판단하지 않고 차이만 보여준다.
 
   - 수불 마감 항등식: 기초 + 입고 − 출고 = 기말
@@ -23,7 +23,7 @@ def _read(path: Path) -> pd.DataFrame:
 
 
 def ledger_month(ym: str) -> dict:
-    d = LEDGER / ym
+    d = LEDGER / ym[:4] / ym
     close = _read(d / "수불요약_수불마감_정제.csv").set_index("계정명")
     kpi = _read(d / "수불요약_매출지표_정제.csv").set_index("지표")["값"]
     loss = _read(d / "수불요약_로스요약_정제.csv").set_index("구분")
@@ -54,7 +54,7 @@ def pos_months() -> pd.DataFrame:
 
 
 def main() -> int:
-    months = sorted(p.name for p in LEDGER.iterdir() if p.is_dir())
+    months = sorted(p.name for p in LEDGER.glob("20*/20*") if p.is_dir())
     led = pd.DataFrame([ledger_month(m) for m in months])
     out = led.merge(pos_months(), on="월", how="left")
     out["수불_항등식_차이"] = out["수불_기초재고"] + out["수불_입고_구매"] - out["수불_출고"] - out["수불_기말재고"]

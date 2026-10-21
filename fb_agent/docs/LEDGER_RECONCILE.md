@@ -1,14 +1,14 @@
 # 월별 수불부 정제와 POS 대조 (2025-01 ~ 2026-09)
 
-원본 `data/source/수불부/<YYYY-MM>.md` → 정제본 `data/cleaned/수불부/<YYYY-MM>/` (21개월).
+원본 `data/source/수불부/<연도>/<YYYY-MM>.md` → 정제본 `data/cleaned/수불부/<연도>/<YYYY-MM>/` (21개월).
 정제한 시트는 수불요약(8개 표), 실사재고, 입고내역이다. 매출입력·판매및할인은 POS와 겹쳐서 이번에는 정제하지 않았다.
 
 ```bash
-python -m prep --only 실사재고 입고내역 수불요약 --src data/source/수불부/2026-01.md --out data/cleaned/수불부/2026-01
+python -m prep --only 실사재고 입고내역 수불요약 --src data/source/수불부/2026/2026-01.md --out data/cleaned/수불부/2026/2026-01
 python -m prep.ledger_reconcile      # data/cleaned/수불부/POS_대조_월별.csv
 ```
 
-`cleaned/수불부/2025-12/`는 예전에 `cleaned/` 루트에 있던 12월 정제본을 옮긴 것이다 (내용 동일, 매출입력·판매및할인 포함).
+`cleaned/수불부/2025/2025-12/`는 예전에 `cleaned/` 루트에 있던 12월 정제본을 옮긴 것이다 (내용 동일, 매출입력·판매및할인 포함).
 
 ## 정제 결과
 

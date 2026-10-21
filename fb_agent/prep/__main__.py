@@ -1,4 +1,4 @@
-"""등록된 시트를 모두 정제한다:  python -m prep [--src data/f_b_menu_data.md] [--out data/cleaned/수불부/2025-12] [--only 이름 ...]
+"""등록된 시트를 모두 정제한다:  python -m prep [--src data/f_b_menu_data.md] [--out data/cleaned/수불부/2025/2025-12] [--only 이름 ...]
 
 시트마다 <이름>_정제.csv (표가 여러 개면 <이름>_<표>_정제.csv)와 <이름>_결측치_처리내역.csv 를 만들고,
 시트 간 교차 점검 결과를 정제_점검결과.csv 에 남긴다. 원본 마크다운은 수정하지 않는다.
@@ -61,7 +61,7 @@ def main(argv=None) -> int:
     data = Path(__file__).resolve().parent.parent / "data"
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--src", default=str(data / "f_b_menu_data.md"))
-    ap.add_argument("--out", default=str(data / "cleaned" / "수불부" / "2025-12"))
+    ap.add_argument("--out", default=str(data / "cleaned" / "수불부" / "2025" / "2025-12"))
     ap.add_argument("--only", nargs="*", help="정제할 파일 이름만 지정 (예: 실사재고 입고내역)")
     a = ap.parse_args(argv)
 

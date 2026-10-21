@@ -431,7 +431,7 @@ def po_auto(leaf: Leaf):
 def _engine_stamp() -> float:
     """모델·자료 파일이 바뀌면 캐시를 새로 만들도록 하는 표시."""
     files = [reorder_engine.MODEL_PATH, *reorder_engine.DATA.glob("20*/구매청구_정제.csv"), *reorder_engine.DATA.glob("20*/매출일자별_정제.csv"),
-             *reorder_engine.LEDGER.glob("20*/실사재고_정제.csv")]
+             *reorder_engine.LEDGER.glob("20*/20*/실사재고_정제.csv")]
     return max((f.stat().st_mtime for f in files if f.exists()), default=0.0)
 
 
