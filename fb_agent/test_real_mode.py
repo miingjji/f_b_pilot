@@ -9,6 +9,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 HAS_REAL = (ROOT / "data" / "real" / "items.csv").exists()
+if HAS_REAL:
+    import csv
+    with open(ROOT / "data" / "real" / "items.csv", encoding="utf-8-sig") as f:
+        CSV_ITEMS = sum(1 for _ in csv.DictReader(f))
+    with open(ROOT / "data" / "real" / "suppliers.csv", encoding="utf-8-sig") as f:
+        CSV_SUPPLIERS = sum(1 for _ in csv.DictReader(f))
 
 PROBE = r"""
 import json, sys
@@ -123,7 +129,7 @@ class RealMode(unittest.TestCase):
         cls.r = json.loads(line[5:])
 
     def test_real_master_is_active(self):
-        self.assertEqual((self.r["items"], self.r["suppliers"]), (855, 45))
+        self.assertEqual((self.r["items"], self.r["suppliers"]), (CSV_ITEMS, CSV_SUPPLIERS))
         self.assertIn("실제 데이터", self.r["label"])
         self.assertEqual(self.r["stores"][0], "수원점")                        # 실제 재고의 매장이 첫 번째
 
@@ -158,7 +164,7 @@ class RealMode(unittest.TestCase):
         self.assertIn("이력 기반 발주 추천", r["memo"])
 
     def test_agent_answers_are_short_even_with_hundreds_of_items(self):
-        self.assertEqual(self.r["recs"], 855)
+        self.assertEqual(self.r["recs"], CSV_ITEMS)
         self.assertLessEqual(self.r["answer_lines"], 8)
         self.assertTrue(self.r["answer_has_total"])
         self.assertLessEqual(self.r["stock_lines"], 8)

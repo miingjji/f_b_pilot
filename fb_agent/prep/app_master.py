@@ -30,6 +30,8 @@ DAYS = 31                                    # 월 일수 기본값 (2025년 12�
 WEEKDAYS = "월화수목금토"
 NO_DATA = "데이터 없음"
 NO_RECENT_RECEIPT = "최근 12개월 입고 없음"
+USER_SET = "사용자 지정"
+USER_SCHEDULE = Path(__file__).resolve().parent.parent / "data" / "real" / "사용자지정_업체일정.csv"      # 마스터를 다시 만들어도 유지되는 사용자 지정 값
 MEASURED = "구매청구 실측"
 MEASURED_GRADES = ("높음", "보통")           # 청구 10건 이상인 업체만 실측 값으로 쓴다
 
@@ -138,8 +140,19 @@ def days_in_source(src) -> int:
     return calendar.monthrange(int(m[1]), int(m[2]))[1] if m else DAYS
 
 
-def _supplier_lead(name: str, sup: pd.DataFrame, measured: dict):
-    """업체의 (리드타임, 출처). 수불부 태그 대표값 → 구매청구 실측 → (None, 데이터 없음)."""
+def user_schedules(path: Path | None = None) -> dict:
+    """사용자가 직접 정한 업체 일정 {업체명: (리드타임(일), 발주 요일 문자열)}. 파일: 거래처명, 발주요일, 리드타임(일), 메모."""
+    path = path or USER_SCHEDULE
+    if not Path(path).exists():
+        return {}
+    t = pd.read_csv(path, encoding="utf-8-sig", dtype=str).fillna("")
+    return {r["거래처명"].strip(): (int(r["리드타임(일)"]), r["발주요일"].strip()) for _, r in t.iterrows() if r["거래처명"].strip()}
+
+
+def _supplier_lead(name: str, sup: pd.DataFrame, measured: dict, user: dict | None = None):
+    """업체의 (리드타임, 출처). 사용자 지정 → 수불부 태그 대표값 → 구매청구 실측 → (None, 데이터 없음)."""
+    if user and name in user:
+        return user[name][0], USER_SET
     r = sup.loc[name]
     if r["리드타임_출처"] != NO_DATA and pd.notna(r["리드타임_적용_일"]):
         return int(r["리드타임_적용_일"]), r["리드타임_출처"]
@@ -147,16 +160,27 @@ def _supplier_lead(name: str, sup: pd.DataFrame, measured: dict):
     return (m[0], MEASURED) if m else (None, NO_DATA)
 
 
-def _item_lead(r, sup: pd.DataFrame, measured: dict):
+def _item_lead(r, sup: pd.DataFrame, measured: dict, user: dict | None = None):
     """품목의 (리드타임, 출처). 품명 태그가 있으면 그 값, 아니면 발주처(업체)의 값."""
     if r["리드타임_출처"] == "품명 태그" and pd.notna(r["리드타임_적용_일"]):
         return int(r["리드타임_적용_일"]), "품명 태그"
-    return _supplier_lead(r["발주처"], sup, measured)
+    return _supplier_lead(r["발주처"], sup, measured, user)
 
 
-def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS, measured: dict | None = None, usage_hist: dict | None = None):
-    """(품목 표, 업체 표, 요약). 품목 표는 master.py 가 읽는 형식 + 출처 열. measured 는 measured_suppliers() 결과."""
+def drop_unusable_suppliers(items: pd.DataFrame, suppliers: pd.DataFrame):
+    """계산할 수 있는 값이 하나도 없는 업체(리드타임·발주 요일을 모르고, 품목에도 계산된 소비량이 없는 업체)와 그 품목을 뺀다.
+    (items, suppliers, 삭제한 업체 목록) 을 돌려준다."""
+    has_schedule = (suppliers["기본리드타임"] != "") | (suppliers["발주요일"] != "")
+    computed = items[items["일소비량_출처"] != NO_RECENT_RECEIPT].groupby("거래처").size()
+    keep = has_schedule | suppliers["거래처명"].isin(computed.index)
+    dropped = sorted(suppliers.loc[~keep, "거래처명"])
+    return (items[~items["거래처"].isin(dropped)].reset_index(drop=True), suppliers[keep].reset_index(drop=True), dropped)
+
+
+def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS, measured: dict | None = None, usage_hist: dict | None = None, user: dict | None = None):
+    """(품목 표, 업체 표, 요약). 품목 표는 master.py 가 읽는 형식 + 출처 열. measured 는 measured_suppliers() 결과, user 는 user_schedules() 결과."""
     measured = measured or {}
+    user = user or {}
     usage_hist = usage_hist or {}
     std_map = dict(zip(std["코드"], std["이론사용_g"]))
     sup = suppliers.set_index("업체명")
@@ -188,8 +212,8 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
         if r["품목구분"] == "소모품" and stock == 0 and usage:      # 쓰는 소모품이 실사에서 0으로만 잡혀 있으면 세지 않은 것: 재고를 모른다
             stock, stock_src = None, NO_DATA
 
-        lead, lead_src = _item_lead(r, sup, measured)
-        s_lead, _s_src = _supplier_lead(r["발주처"], sup, measured)
+        lead, lead_src = _item_lead(r, sup, measured, user)
+        s_lead, _s_src = _supplier_lead(r["발주처"], sup, measured, user)
         rows.append({
             "품목코드": code, "품목명": r["품명"], "대분류": r["품목구분"], "중분류": r["계정명"], "기본단위": unit,
             "PK당수량": pk, "BOX당PK": 1.0, "EA당수량": ea, "일소비량": usage,
@@ -206,12 +230,14 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
 
     s_rows = []
     for name, r in sup.iterrows():
-        lead, lead_src = _supplier_lead(name, sup, measured)
-        m = match_measured(name, measured)
-        s_rows.append({"거래처명": name, "발주요일": m[1] if m else "", "기본리드타임": "" if lead is None else lead, "취급분야": r["취급구분"],
-                       "발주요일_출처": MEASURED if m else NO_DATA, "리드타임_출처": lead_src})
+        lead, lead_src = _supplier_lead(name, sup, measured, user)
+        m = (user[name][1], USER_SET) if name in user else ((match_measured(name, measured) or (None, ""))[1], MEASURED)
+        has_days = bool(m[0])
+        s_rows.append({"거래처명": name, "발주요일": m[0] if has_days else "", "기본리드타임": "" if lead is None else lead, "취급분야": r["취급구분"],
+                       "발주요일_출처": m[1] if has_days else NO_DATA, "리드타임_출처": lead_src})
     sdf = pd.DataFrame(s_rows)
-    info = {"items": len(df), "suppliers": len(sdf),
+    df, sdf, dropped = drop_unusable_suppliers(df, sdf)
+    info = {"items": len(df), "suppliers": len(sdf), "삭제된_업체": dropped,
             "일소비량_출처": df["일소비량_출처"].value_counts().to_dict(), "재고_출처": df["재고_출처"].value_counts().to_dict(),
             "리드타임_출처": df["리드타임_출처"].value_counts().to_dict()}
     return df, sdf, info
@@ -221,7 +247,7 @@ def build_from_markdown(src, ledger_history: bool = True):
     sheets = read_sheets(src)
     tables, _ = build_all(src, sheets=sheets)
     return build_app_master(tables["업체별_품목"], tables["업체_마스터"], read_standard_usage(sheets[SHEET_STD]), days_in_source(src),
-                            measured_suppliers(), ledger_usage() if ledger_history else None)
+                            measured_suppliers(), ledger_usage() if ledger_history else None, user_schedules())
 
 
 README = """# 실제 데이터 기반 앱 마스터
@@ -236,8 +262,8 @@ README = """# 실제 데이터 기반 앱 마스터
 | 일 소비량 | `수불부 12개월 실적`(12개월 입고 + 기초 실사재고 − 기말 실사재고) ÷ 일수, 없으면 `표준사용량`, 그다음 `입고 기반 추정` | 12개월 동안 입고가 없으면 소비 0 (`최근 12개월 입고 없음`) |
 | 현재 재고 | `실사재고` | 쓰는 소모품이 실사에서 0으로만 잡혀 세지 않은 것이면 비움 |
 | 안전 재고 | 정책 값: 일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) | 리드타임이 없으면 비움 |
-| 리드타임 | 품명 태그(수불부), `구매청구 실측`(2024~2026 청구→입고 일수 90분위, 청구 10건 이상 업체) | 비움 |
-| 발주 요일 | `구매청구 실측`(청구가 가장 많은 요일, 청구 10건 이상 업체) | 비움 |
+| 리드타임 | `사용자 지정`(`사용자지정_업체일정.csv`), 품명 태그(수불부), `구매청구 실측`(2024~2026 청구→입고 일수 90분위, 청구 10건 이상 업체) | 비움 |
+| 발주 요일 | `사용자 지정`, `구매청구 실측`(청구가 가장 많은 요일, 청구 10건 이상 업체) | 비움 (리드타임·발주 요일과 계산된 소비량이 모두 없는 업체는 품목과 함께 뺀다) |
 
 소모품의 기본단위는 규격 1개(PK)를 `개`로 센 값입니다 (환산단위 1).
 """

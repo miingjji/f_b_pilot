@@ -6,8 +6,8 @@ from pathlib import Path
 import pandas as pd
 
 from master import load_master
-from prep.app_master import (MEASURED, NO_DATA, NO_RECENT_RECEIPT, build_app_master, ledger_usage, match_measured, read_standard_usage,
-                             safety_days, write_master)
+from prep.app_master import (MEASURED, NO_DATA, NO_RECENT_RECEIPT, USER_SET, build_app_master, drop_unusable_suppliers, ledger_usage,
+                             match_measured, read_standard_usage, safety_days, user_schedules, write_master)
 
 NA = pd.NA
 ORG_COLS = ["발주처", "원거래처", "품목구분", "계정명", "품목코드_RMS", "품목코드_CK", "품목코드_매장", "품명", "규격", "환산단위", "당월입고수량",
@@ -46,6 +46,31 @@ class Measured(unittest.TestCase):
         self.assertEqual(match_measured("가온에프엔비", m), (2, "수"))
         self.assertIsNone(match_measured("없는업체", m))
         self.assertIsNone(match_measured("농원", m))                                       # 일부 글자만 같아서는 맞추지 않는다
+
+
+class UserSchedule(unittest.TestCase):
+    def test_file_is_read_and_beats_tags_and_measured_values(self):
+        path = Path(tempfile.mkdtemp()) / "u.csv"
+        path.write_text("거래처명,발주요일,리드타임(일),메모\n바이맥스,일수,2,x\nCK,월화수목금토,1,\n", encoding="utf-8-sig")
+        user = user_schedules(path)
+        self.assertEqual(user, {"바이맥스": (2, "일수"), "CK": (1, "월화수목금토")})
+        self.assertEqual(user_schedules(Path("/nonexistent.csv")), {})
+        items, sup, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured={"(주)대풍농산": (3, "화목토"), "바이맥스": (9, "월")}, user=user)
+        s = sup.set_index("거래처명")
+        self.assertEqual((s.loc["바이맥스", "기본리드타임"], s.loc["바이맥스", "발주요일"], s.loc["바이맥스", "리드타임_출처"], s.loc["바이맥스", "발주요일_출처"]),
+                         (2, "일수", USER_SET, USER_SET))                                       # 실측(9일·월)보다 지정 값이 우선
+        self.assertEqual((s.loc["CK", "기본리드타임"], s.loc["CK", "발주요일"]), (1, "월화수목금토"))
+        by = items.set_index("품목코드")
+        self.assertEqual((by.loc["S1", "리드타임"], by.loc["S1", "리드타임_출처"]), ("", USER_SET))   # 품목 리드타임은 업체 값을 따른다
+
+    def test_suppliers_with_nothing_computable_are_dropped_with_their_items(self):
+        items = pd.DataFrame({"품목코드": ["A", "B", "C", "D"], "거래처": ["x", "y", "z", "z"],
+                              "일소비량_출처": [NO_RECENT_RECEIPT, NO_RECENT_RECEIPT, "수불부 12개월 실적", NO_RECENT_RECEIPT]})
+        sup = pd.DataFrame({"거래처명": ["x", "y", "z", "w"], "기본리드타임": ["", 2, "", ""], "발주요일": ["", "월", "", ""]})
+        kept_items, kept_sup, dropped = drop_unusable_suppliers(items, sup)
+        self.assertEqual(dropped, ["w", "x"])                                       # y 는 일정이 있고, z 는 계산된 소비량이 있어 남긴다
+        self.assertEqual(list(kept_sup["거래처명"]), ["y", "z"])
+        self.assertEqual(list(kept_items["품목코드"]), ["B", "C", "D"])             # 남는 업체의 품목은 모두 남긴다
 
 
 class Policy(unittest.TestCase):
@@ -201,17 +226,18 @@ class RealFile(unittest.TestCase):
         cls.items, cls.sup, cls.info = build_from_markdown(REAL, ledger_history=False)          # 2025-12 한 달 파일 기준 (표준사용량 148개)
 
     def test_counts_and_sources(self):
-        self.assertEqual(len(self.items), 903)
-        self.assertEqual(len(self.sup), 45)
+        self.assertEqual(len(self.sup) + len(self.info["삭제된_업체"]), 45)          # 계산할 값이 없는 업체는 품목과 함께 뺀다
+        self.assertEqual(len(self.items), self.info["items"])
+        self.assertGreater(len(self.items), 800)
         self.assertEqual(self.info["일소비량_출처"]["표준사용량"], 148)
-        self.assertEqual(sum(self.info["일소비량_출처"].values()), 903)
+        self.assertEqual(sum(self.info["일소비량_출처"].values()), len(self.items))
         self.assertTrue(self.items["품목명"].is_unique and self.items["품목코드"].is_unique)
 
     def test_loads_in_the_app_master_loader(self):
         out = Path(tempfile.mkdtemp())
         write_master(self.items, self.sup, out)
         suppliers, items = load_master(out)
-        self.assertEqual((len(items), len(suppliers)), (903, 45))
+        self.assertEqual((len(items), len(suppliers)), (len(self.items), len(self.sup)))
         active = [i for i in items.values() if i.usage_known and i.daily_usage_g > 0]
         src = self.info["일소비량_출처"]
         self.assertEqual(len(active), sum(n for k, n in src.items() if k != NO_RECENT_RECEIPT))
