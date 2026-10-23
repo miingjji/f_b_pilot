@@ -26,7 +26,6 @@ class Event:
     category: str
     detail: str = ""
     id: str = ""          # 수동 일정만 값이 있음 (삭제 가능)
-    sample: bool = False  # 데모용 샘플 여부
 
     @property
     def deletable(self) -> bool:
@@ -40,20 +39,6 @@ def new_event(day: date, category: str, title: str, detail: str = "") -> Event:
     if not title or not title.strip():
         raise InvalidInputError("제목을 입력해 주세요.")
     return Event(day, title.strip(), category, (detail or "").strip(), id=uuid4().hex[:8])
-
-
-def sample_events(today: date) -> list[Event]:
-    """첫 실행 시 달력이 비어 보이지 않도록 넣는 데모 일정 (기준일 상대)."""
-    d = lambda n: today + timedelta(days=n)  # noqa: E731
-    return [
-        Event(d(0), "오전 재고 실사", "event", "주방·창고 합동 실사", "s0", True),
-        Event(d(1), "신메뉴 시식회", "event", "오후 3시, 단골 고객 초청", "s1", True),
-        Event(d(3), "주말 프로모션 준비", "event", "배너·POP 교체", "s2", True),
-        Event(d(-2), "점심 매출 전주 대비 -18%", "sales", "인근 공사로 유입 감소", "s3", True),
-        Event(d(5), "카드 단말기 점검", "sales", "오전 10시 기사 방문", "s4", True),
-        Event(d(2), "홀 직원 1명 결근 예정", "staff", "대체 인력 필요", "s5", True),
-        Event(d(8), "신규 직원 교육", "staff", "위생 교육 포함", "s6", True),
-    ]
 
 
 GROUP_LIMIT = 3          # 같은 업체·같은 날짜의 발주(입고)가 이 개수를 넘으면 한 줄로 묶음 (품목이 수백 개여도 달력이 읽히도록)

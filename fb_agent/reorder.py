@@ -15,7 +15,7 @@ MAX_DAYS_LEFT = 3650   # 소진일 계산 상한(10년). 재고가 매우 크면
 class Recommendation:
     item: str
     supplier: str
-    status: str                 # URGENT / ORDER_NOW / ORDER_SOON / OK / NO_USAGE
+    status: str                 # URGENT / ORDER_NOW / ORDER_SOON / OK / NO_USAGE / NO_DATA
     days_left: float | None
     stockout_date: date | None
     order_date: date | None     # 발주 예정일(기한)
@@ -31,8 +31,9 @@ def fmt_date(d: date | None) -> str:
 
 def is_order_day(item: Item, d: date, cal: StoreCalendar) -> bool:
     """발주 가능일: 거래처 발주 요일 + 매장 영업일 + 입고일이 매장 영업일."""
-    return (d.weekday() in item.supplier.order_weekdays and cal.is_open(d)
-            and cal.is_open(d + timedelta(days=item.lead_time_days)))
+    lead = item.lead_time_days
+    return (lead is not None and d.weekday() in item.supplier.order_weekdays and cal.is_open(d)
+            and cal.is_open(d + timedelta(days=lead)))
 
 
 def order_days(item: Item, start: date, cal: StoreCalendar, n=SEARCH_DAYS) -> list[date]:
@@ -54,6 +55,13 @@ def recommend(item: Item, stock_g, today: date | None = None, cal: StoreCalendar
     stock = _check(stock_g, "재고(g)")
     usage, lead, sup = item.daily_usage_g, item.lead_time_days, item.supplier.name
 
+    missing = [name for name, ok in (("일 소비량", item.usage_known), ("리드타임", lead is not None),
+                                      ("발주 요일", bool(item.supplier.order_weekdays)),
+                                      ("현재 재고", item.current_stock is not None or stock != 0))     # 마스터에 실사 값이 없는 품목은 입력 전까지 모른다
+               if not ok]
+    if missing:                                         # 실제 근거가 없는 값으로 계산하지 않는다
+        return Recommendation(item.name, sup, "NO_DATA", None, None, None, None, 0, 0,
+                              f"{' · '.join(missing)} 데이터 없음 - 추천할 수 없음")
     if usage == 0:
         return Recommendation(item.name, sup, "NO_USAGE", None, None, None, None, 0, 0,
                               "소비 없음 - 발주 불필요")

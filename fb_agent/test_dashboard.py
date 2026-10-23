@@ -1,14 +1,14 @@
-import testenv  # noqa: F401  (FB_MASTER=sample 고정)
+import testenv  # noqa: F401  (FB_MASTER_DIR=testdata/master 고정)
 import unittest
 from datetime import date, timedelta
 
 from agent import AgentContext, answer
 TOPIC_BASE_ORDER = ["지금 발주해야 할 품목은?", "재고 현황 요약", "발주 입고 일정 알려줘"]
 from calendar_data import (GROUP_LIMIT, Event, build_events, cell_width, chars_per_line, derived_events, max_cell_events,
-                           new_event, row_height, sample_events, visible_events)
+                           new_event, row_height, visible_events)
 from data import DEFAULT_CALENDAR, ITEMS
 from errors import InvalidInputError
-from insights import recommendations, sample_stock_g
+from insights import master_stock_g, recommendations
 from models import StoreCalendar
 from reorder import Recommendation
 
@@ -32,7 +32,7 @@ class Events(unittest.TestCase):
         self.assertEqual([e.day for e in derived_events([], extra, THU, THU)], [THU])
 
     def test_order_events_only_for_actionable_status(self):
-        recs = recommendations(sample_stock_g(), THU, CAL)
+        recs = recommendations(master_stock_g(), THU, CAL)
         evs = derived_events(recs, CAL, THU, THU + timedelta(days=30))
         orders = [e for e in evs if e.category == "order"]
         actionable = [r for r in recs if r.status in ("URGENT", "ORDER_NOW", "ORDER_SOON")]
@@ -45,11 +45,6 @@ class Events(unittest.TestCase):
         by_day = build_events(custom, [], CAL, THU, THU + timedelta(days=6))
         self.assertEqual([e.title for e in by_day[THU]], ["a", "b"])   # 분류 순서: event < staff
         self.assertNotIn(THU + timedelta(days=40), by_day)
-
-    def test_samples_relative_to_today(self):
-        s = sample_events(THU)
-        self.assertTrue(all(e.sample and e.deletable for e in s))
-        self.assertEqual(len({e.id for e in s}), len(s))
 
 
 def rec(item, supplier, order, arrival, status="URGENT", packs=2):
@@ -90,8 +85,8 @@ class GroupedOrderEvents(unittest.TestCase):
         recs = [rec(f"품목{i}", "CK", THU, THU + timedelta(days=1), status="OK") for i in range(10)]
         self.assertEqual(self.orders(recs), [])
 
-    def test_sample_data_behaviour_is_unchanged(self):
-        recs = recommendations(sample_stock_g(), THU, CAL)
+    def test_master_stock_orders_match_actionable_recommendations(self):
+        recs = recommendations(master_stock_g(), THU, CAL)
         ev = [e for e in derived_events(recs, CAL, THU, THU + timedelta(days=30)) if e.category == "order"]
         actionable = [r for r in recs if r.status in ("URGENT", "ORDER_NOW", "ORDER_SOON")]
         self.assertEqual(len(ev), 2 * len([r for r in actionable if r.order_date and r.arrival_date]))
@@ -134,10 +129,15 @@ class CellLayout(unittest.TestCase):
         self.assertGreater(busy, row_height([([], 0, False)], 5))
 
 
+EVENTS = [Event(THU, "오전 재고 실사", "event", "주방·창고 합동 실사", "e0"), Event(THU + timedelta(days=1), "신메뉴 시식회", "event", "오후 3시", "e1"),
+          Event(THU + timedelta(days=2), "홀 직원 1명 결근 예정", "staff", "대체 인력 필요", "e2"),
+          Event(THU - timedelta(days=2), "점심 매출 전주 대비 -18%", "sales", "공사로 유입 감소", "e3")]       # 테스트용 일정 (앱은 일정을 만들어 넣지 않는다)
+
+
 class AgentAnswers(unittest.TestCase):
     def ctx(self):
-        recs = recommendations(sample_stock_g(), THU, CAL)
-        ev = build_events(sample_events(THU), recs, CAL, THU, THU + timedelta(days=14))
+        recs = recommendations(master_stock_g(), THU, CAL)
+        ev = build_events(EVENTS, recs, CAL, THU, THU + timedelta(days=14))
         return AgentContext(THU, recs, ev)
 
     def test_order_question(self):

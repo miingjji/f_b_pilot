@@ -15,7 +15,7 @@ from prep.md_tables import read_sheet
 
 SHEET = "매출입력(매출영수증상세)"
 # 빈칸의 의미 -> 채울 값
-FILL_TEXT = {"취소구분": "정상", "할인수단": "할인없음", "객층": "미기록", "결제수단": "결제없음"}
+FILL_TEXT = {"취소구분": "정상", "할인수단": "할인없음", "객층": "미기록", "결제수단": "결제없음", "테이블": "미기록"}
 CANCEL_ROW_TEXT = "해당없음"                      # 메뉴 없는 취소 영수증의 메뉴 관련 열
 MENU_TEXT_COLS = ["대분류명", "중분류명", "소분류명", "메뉴명", "과/면세"]
 ID_TEXT_COLS = ["법인코드", "브랜드코드", "매장코드", "메뉴코드"]        # 숫자처럼 보여도 문자 ID
@@ -33,7 +33,7 @@ def clean_sales_detail(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     report: list[dict] = []
 
     # 1) 취소구분·할인수단·객층: 빈칸 = 해당 사항 없음
-    for col, rule in (("취소구분", "취소가 아닌 정상 거래"), ("할인수단", "할인 없음"), ("객층", "객층 입력 안 함")):
+    for col, rule in (("취소구분", "취소가 아닌 정상 거래"), ("할인수단", "할인 없음"), ("객층", "객층 입력 안 함"), ("테이블", "테이블 번호가 기록되지 않음")):
         if col in df:
             _fill(df, col, FILL_TEXT[col], df[col].isna(), rule, report)
 
@@ -53,9 +53,14 @@ def clean_sales_detail(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     if "메뉴명" in df:
         no_menu = df["메뉴명"].isna()
         normal = df["취소구분"].eq(FILL_TEXT["취소구분"]) if "취소구분" in df else pd.Series(False, index=df.index)
-        if (no_menu & normal).any():
+        money = [c for c in ("단가", "수량", "총매출", "할인", "실매출", "순매출", "부가세") if c in df]
+        empty_receipt = no_menu & normal & (df[money].apply(pd.to_numeric, errors="coerce").fillna(0) == 0).all(axis=1) if money else no_menu & False
+        bad = no_menu & normal & ~empty_receipt                                  # 금액이 0인 빈 영수증(주문 없이 열렸다 닫힌 테이블)은 허용
+        if bad.any():
             raise UnhandledMissingError(
-                f"메뉴명이 비었는데 취소 거래가 아닌 행 {int((no_menu & normal).sum())}개 (위치: {list(df.index[no_menu & normal][:5])})")
+                f"메뉴명이 비었는데 취소 거래가 아닌 행 {int(bad.sum())}개 (위치: {list(df.index[bad][:5])})")
+        if empty_receipt.any():
+            report.append({"열": "메뉴명", "채운 개수": int(empty_receipt.sum()), "규칙": "금액이 모두 0인 빈 영수증(메뉴 없음)", "채운 값": CANCEL_ROW_TEXT})
         for col in [*MENU_TEXT_COLS, "메뉴코드"]:
             if col in df:
                 _fill(df, col, CANCEL_ROW_TEXT, df[col].isna() & no_menu, "메뉴 없는 취소 영수증", report)

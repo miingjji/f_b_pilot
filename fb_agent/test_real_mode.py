@@ -1,5 +1,5 @@
-"""FB_MASTER=real 로 앱을 띄웠을 때의 동작 검증. 환경변수는 import 시점에 정해지므로 별도 프로세스에서 실행한다."""
-import testenv  # noqa: F401  (FB_MASTER=sample 고정)
+"""실제 마스터(data/real)로 앱을 띄웠을 때의 동작 검증. 환경변수는 import 시점에 정해지므로 별도 프로세스에서 실행한다."""
+import testenv  # noqa: F401  (FB_MASTER_DIR=testdata/master 고정)
 import json
 import os
 import subprocess
@@ -9,6 +9,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 HAS_REAL = (ROOT / "data" / "real" / "items.csv").exists()
+if HAS_REAL:
+    import csv
+    with open(ROOT / "data" / "real" / "items.csv", encoding="utf-8-sig") as f:
+        CSV_ITEMS = sum(1 for _ in csv.DictReader(f))
+    with open(ROOT / "data" / "real" / "suppliers.csv", encoding="utf-8-sig") as f:
+        CSV_SUPPLIERS = sum(1 for _ in csv.DictReader(f))
 
 PROBE = r"""
 import json, sys
@@ -29,11 +35,8 @@ views.render(get_leaf({leaf!r}))
 def render(leaf):
     return AppTest.from_string(SCRIPT.format(leaf=leaf), default_timeout=120).run()
 
-# 1) 시드 발주서가 현재 마스터의 품목이어야 함
-from state import _seed_purchase_orders
-seeds = _seed_purchase_orders(date.today())
+# 1) 가상 시드가 없어야 함 (발주서·입고·일정이 비어 있다)
 out["seed_ok"] = not render("recv-by-po").exception
-out["seeds"] = [(p["품목"] in data.ITEMS, data.ITEMS[p["품목"]].supplier.name == p["거래처"]) for p in seeds]
 
 # 2) 화면 렌더링
 leaves = ["home-dashboard", "po-auto", "po-engine", "stock-input", "stock-forecast", "stock-flow", "po-leadtime", "set-items", "set-suppliers",
@@ -117,7 +120,7 @@ print("JSON:" + json.dumps(out, ensure_ascii=False))
 class RealMode(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        env = {**os.environ, "FB_MASTER": "real"}
+        env = {k: v for k, v in os.environ.items() if k not in ("FB_MASTER", "FB_MASTER_DIR")}
         p = subprocess.run([sys.executable, "-c", PROBE % {"root": str(ROOT)}], capture_output=True, text=True, env=env, cwd=ROOT,
                            timeout=600)
         line = next((ln for ln in p.stdout.splitlines() if ln.startswith("JSON:")), None)
@@ -126,13 +129,12 @@ class RealMode(unittest.TestCase):
         cls.r = json.loads(line[5:])
 
     def test_real_master_is_active(self):
-        self.assertEqual((self.r["items"], self.r["suppliers"]), (855, 45))
+        self.assertEqual((self.r["items"], self.r["suppliers"]), (CSV_ITEMS, CSV_SUPPLIERS))
         self.assertIn("실제 데이터", self.r["label"])
         self.assertEqual(self.r["stores"][0], "수원점")                        # 실제 재고의 매장이 첫 번째
 
-    def test_seed_orders_use_real_items(self):
+    def test_no_seeded_demo_records(self):
         self.assertTrue(self.r["seed_ok"])
-        self.assertTrue(len(self.r["seeds"]) == 3 and all(a and b for a, b in self.r["seeds"]), self.r["seeds"])
 
     def test_screens_render_without_exceptions(self):
         self.assertEqual(self.r["exceptions"], {})
@@ -162,7 +164,7 @@ class RealMode(unittest.TestCase):
         self.assertIn("이력 기반 발주 추천", r["memo"])
 
     def test_agent_answers_are_short_even_with_hundreds_of_items(self):
-        self.assertEqual(self.r["recs"], 855)
+        self.assertEqual(self.r["recs"], CSV_ITEMS)
         self.assertLessEqual(self.r["answer_lines"], 8)
         self.assertTrue(self.r["answer_has_total"])
         self.assertLessEqual(self.r["stock_lines"], 8)
@@ -172,30 +174,21 @@ class RealMode(unittest.TestCase):
         self.assertLessEqual(self.r["max_events_per_day"], 15)                  # 묶기 전에는 하루 35건
 
 
-class ModeSelection(unittest.TestCase):
-    """FB_MASTER 가 없으면 data/real 이 있을 때만 실제 모드, 값이 있으면 그대로 따른다."""
+class MasterSelection(unittest.TestCase):
+    """마스터는 항상 data/real, 테스트만 FB_MASTER_DIR 로 바꾼다. 매장은 실제 매장 하나."""
 
     @staticmethod
-    def mode(**env) -> str:
-        base = {k: v for k, v in os.environ.items() if k != "FB_MASTER"}
-        p = subprocess.run([sys.executable, "-c", "import config; print(config.MASTER_MODE)"], capture_output=True, text=True,
-                           env={**base, **env}, cwd=ROOT, timeout=120)
+    def probe(**env) -> str:
+        base = {k: v for k, v in os.environ.items() if k not in ("FB_MASTER", "FB_MASTER_DIR")}
+        p = subprocess.run([sys.executable, "-c", "import config; print(config.MASTER_DIR.name, config.TEST_MASTER, config.STORES)"],
+                           capture_output=True, text=True, env={**base, **env}, cwd=ROOT, timeout=120)
         return p.stdout.strip()
 
-    @unittest.skipUnless(HAS_REAL, "data/real 이 없으면 건너뜀")
-    def test_auto_picks_real_when_data_exists(self):
-        self.assertEqual(self.mode(), "real")
+    def test_default_is_real_master_with_one_store(self):
+        self.assertEqual(self.probe(), "real False ('수원점',)")
 
-    def test_explicit_sample_always_wins(self):
-        self.assertEqual(self.mode(FB_MASTER="sample"), "sample")
-
-    def test_auto_falls_back_to_sample_without_real_data(self):
-        # data/real 이 없는 저장소를 흉내: config 가 보는 경로를 존재하지 않는 곳으로 바꿔 확인
-        code = ("import config, pathlib; config.REAL_ITEMS = pathlib.Path('/nonexistent/items.csv'); "
-                "print(config._mode())")
-        base = {k: v for k, v in os.environ.items() if k != "FB_MASTER"}
-        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=base, cwd=ROOT, timeout=120)
-        self.assertEqual(p.stdout.strip(), "sample")
+    def test_test_directory_override(self):
+        self.assertEqual(self.probe(FB_MASTER_DIR=str(ROOT / "testdata" / "master")), "master True ('수원점',)")
 
 
 if __name__ == "__main__":

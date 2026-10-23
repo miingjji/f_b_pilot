@@ -22,15 +22,10 @@ streamlit run app.py
 ```
 
 `data/real/`(실제 매장 데이터 기반 마스터, 품목 855개(2026-09 실사 기준)·거래처 45곳)이 저장소에 들어 있어서 **`streamlit run app.py`만 실행해도 실제 데이터 기반으로 뜹니다.**
-`data/real/`이 없으면 샘플 마스터(28개)로 자동 전환됩니다. 직접 고르려면:
-
-```bash
-FB_MASTER=sample streamlit run app.py   # 샘플 마스터 (소모품 28개)
-FB_MASTER=real streamlit run app.py     # 실제 기반 마스터 강제 (없으면 안내 오류)
-./run_real.sh                           # data/real/ 이 없으면 python -m prep.app_master 로 만든 뒤 실행
-```
- 일소비량·발주 요일·리드타임·일부 재고는 가상 값이며
-매출 화면은 수원점 2025-12 실제 매출을 씁니다 (원본이 없는 날짜·매장은 실제 12월의 요일·시간대 패턴을 따른 가상 값, 기준일 기본값은 오늘). 출처는 `data/real/items.csv`의 `*_출처` 열에 있습니다 ([docs/DATA_CLEANING.md](docs/DATA_CLEANING.md)).
+앱이 보여 주는 값은 모두 실제 데이터이고, 근거가 없는 값은 `데이터 없음`으로 표시합니다 (가상 값을 만들지 않습니다).
+`./run_real.sh`는 `data/real/`이 없으면 `python -m prep.app_master`로 만든 뒤 실행합니다.
+ 일소비량·발주 요일·리드타임·재고는 실제 근거가 있는 값만 채우고, 없으면 비워 앱에 `데이터 없음`으로 보입니다.
+매출 화면은 수원점 실제 POS 데이터(2024-01~2026-09)만 씁니다 (`sales_data.py`, 집계는 `python -m prep.sales_aggregates`). 데이터가 끝난 뒤의 기준일은 마지막 영업일입니다. 출처는 `data/real/items.csv`의 `*_출처` 열에 있습니다 ([docs/DATA_CLEANING.md](docs/DATA_CLEANING.md)).
 
 CLI로 한 품목만 계산: `python main.py 짜사이 "1pk 300g"`
 
@@ -52,9 +47,10 @@ menu.py              메뉴 트리(레일→대→중→소), 검색(초성 포�
 nav_ui.py            레일 + 서브 패널 + 아코디언, st.Page 등록
 routing.py           소메뉴 id → 페이지 이동
 views/               소메뉴별 화면: home · sales · purchase · hr · ai · settings
-sample_data.py       매출·근태 샘플 데이터 생성 (매장·날짜별 고정 시드)
+sales_data.py        실제 매출 조회 (일자·시간대·메뉴·결제·취소·영수증, 없으면 빈 표)
 master.py            품목·거래처 마스터 CSV 로더/검증/내보내기
-data/                items.csv(품목 마스터) · suppliers.csv(거래처) — 엑셀로 편집
+data/real/           items.csv(품목 마스터) · suppliers.csv(거래처) — prep.app_master 가 생성, 엑셀로 편집 가능
+testdata/master/    테스트 전용 소형 마스터 (앱에서는 쓰지 않음)
 calendar_data.py     일정 모델, 일정 합성, 달력 셀 크기 계산
 insights.py          재고 요약 + 이상징후 판정
 reorder.py           발주 추천 로직
@@ -70,13 +66,13 @@ state.py             세션 상태 (매장별 재고 포함)
 ## 테스트
 
 ```bash
-python -m unittest        # 단위 테스트: 메뉴 구조, 샘플 데이터, 소메뉴 56개 렌더링 등 (AppTest 포함)
+python -m unittest        # 단위 테스트: 메뉴 구조, 매출 조회, 소메뉴 렌더링 등 (AppTest 포함)
 python e2e/check_ui.py    # 실제 브라우저 점검 (e2e/README.md 참고)
 ```
 
 ## 알아둘 점
 - **F&B Agent는 LLM이 아닙니다.** 앱 데이터에 키워드로 답하는 규칙 기반이며, LLM을 붙일 때는 `agent.answer()`만 교체하면 됩니다.
 - **로그인은 데모입니다.** 이름·이메일만 받고 비밀번호는 받지 않습니다. `.streamlit/secrets.toml`에 `[auth]`(OIDC)를 설정하면 `st.login()`으로 자동 전환됩니다.
-- **일정은 세션에만 저장됩니다.** 새로고침하면 샘플 일정으로 돌아갑니다.
-- **매출·근태 화면:** 실제 모드에서 매출은 수원점 2025-12 실제 값이고 그 밖의 날짜는 가상, 근태는 가상입니다(화면에 표시). 샘플 모드는 모두 `sample_data.py`가 채웁니다.
+- **일정은 세션에만 저장됩니다.** 새로고침하면 비어 있는 일정으로 돌아갑니다 (일정을 만들어 넣지 않습니다).
+- **매출·근태 화면:** 매출은 실제 POS 값입니다. 근태·인건비는 원본 데이터가 없어 `데이터 없음` 안내만 보여 줍니다. 회전율(좌석 수)·결제채널 수수료·취소 사유는 원본에 없어 제공하지 않습니다.
 - 이동 중 위젯 상태 문제 등 설계 배경은 `docs/LAYOUT.md`에 정리했습니다.

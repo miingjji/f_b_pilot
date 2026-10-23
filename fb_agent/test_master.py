@@ -1,4 +1,4 @@
-import testenv  # noqa: F401  (FB_MASTER=sample 고정)
+import testenv  # noqa: F401  (FB_MASTER_DIR=testdata/master 고정)
 import csv
 import tempfile
 import unittest
@@ -9,7 +9,7 @@ from converter import normalize_unit, parse_count, to_boxes, to_grams, unit_to_g
 from data import DEFAULT_CALENDAR, ITEMS, ITEMS_BY_CODE, SAMPLE_COUNTS, SUPPLIERS
 from errors import InvalidInputError
 from importer import TEMPLATE_CSV, parse_inventory_file
-from insights import build_table, recommendations, sample_stock_g, stock_from_table
+from insights import build_table, master_stock_g, recommendations, stock_from_table
 from master import ITEM_COLUMNS, item_rows, load_items, load_master, load_suppliers, to_json
 from menu import STORES
 from models import Item, Supplier, fmt_amount
@@ -84,14 +84,12 @@ class Dataset(unittest.TestCase):
         self.assertEqual(ITEMS["냅킨"].spec, "500장/PK · 10PK/BOX")
         self.assertEqual(ITEMS["주방세제"].spec, "4L/PK · 4PK/BOX")
 
-    def test_sample_stock_varies_by_store_but_first_store_is_master(self):
-        base = sample_stock_g(STORES[0])
+    def test_master_stock_is_the_master_current_stock(self):
+        base = master_stock_g()
         self.assertEqual(base, {n: float(it.current_stock) for n, it in ITEMS.items()})
-        self.assertNotEqual(sample_stock_g(STORES[1]), base)
-        self.assertEqual(sample_stock_g(STORES[1]), sample_stock_g(STORES[1]))     # 결정적
 
     def test_sample_status_is_mixed_not_all_urgent(self):
-        recs = recommendations(sample_stock_g(STORES[0]), WED, DEFAULT_CALENDAR)
+        recs = recommendations(master_stock_g(), WED, DEFAULT_CALENDAR)
         st = [r.status for r in recs]
         self.assertGreaterEqual(st.count("OK"), len(st) // 2)
         self.assertGreaterEqual(st.count("URGENT"), 1)
@@ -185,6 +183,13 @@ class Loader(unittest.TestCase):
         g = self.items([self.row(기본단위="g", EA당수량="")])["냅킨"]
         self.assertEqual(g.ea_weight_g, 0)                                                  # g·ml 품목은 EA 미지원이 기본
 
+    def test_blank_usage_stock_and_lead_time_mean_no_data(self):
+        write_csv(self.tmp / "suppliers.csv", ["거래처명", "발주요일", "기본리드타임", "취급분야"], [["갑", "", "", ""]])
+        out = self.items([self.row(일소비량="", 안전재고량="", 현재재고량="")])["냅킨"]
+        self.assertFalse(out.usage_known)
+        self.assertEqual((out.daily_usage_g, out.safety_stock_g, out.current_stock), (0.0, None, None))
+        self.assertEqual((out.lead_time_days, out.supplier.order_days_label, out.supplier.has_schedule), (None, "데이터 없음", False))
+
     def test_errors_name_the_row_and_reason(self):
         cases = [
             ([self.row(), self.row(품목명="다른")], "코드가 중복"),
@@ -195,7 +200,7 @@ class Loader(unittest.TestCase):
             ([self.row(PK당수량=0)], "0보다 커야"),
             ([self.row(안전재고량=-1)], "음수"),
             ([self.row(리드타임="1.5")], "정수"),
-            ([self.row(일소비량="")], "비어 있습니다"),
+            ([self.row(일소비량="abc")], "숫자가 아닙니다"),
             ([self.row(품목코드="")], "필수"),
         ]
         for rows, msg in cases:
@@ -218,21 +223,21 @@ class Loader(unittest.TestCase):
         (self.tmp / "suppliers.csv").write_bytes("거래처명,발주요일,기본리드타임,취급분야\n갑,월,1,\n".encode("cp949"))
         self.assertIn("갑", load_suppliers(self.tmp / "suppliers.csv"))
 
-    def test_shipped_master_loads(self):
-        suppliers, items = load_master()
+    def test_fixture_master_loads(self):
+        suppliers, items = load_master(Path(__file__).resolve().parent / "testdata" / "master")
         self.assertEqual(set(suppliers), {i.supplier.name for i in items.values()})
 
 
 class TableAndImport(unittest.TestCase):
     def test_table_roundtrip_matches_stock(self):
-        stock = sample_stock_g(STORES[0])
+        stock = master_stock_g()
         back, errors = stock_from_table(build_table(stock))
         self.assertEqual(errors, [])
         for n, g in stock.items():
             self.assertAlmostEqual(back[n], g, places=1, msg=n)
 
     def test_bad_cell_is_reported_per_item(self):
-        t = build_table(sample_stock_g(STORES[0]))
+        t = build_table(master_stock_g())
         t.loc[t["품목"] == "냅킨", "PK"] = -1
         stock, errors = stock_from_table(t)
         self.assertEqual([e[0] for e in errors], ["냅킨"])

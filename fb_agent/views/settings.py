@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from auth_ui import current_user, logout, open_auth
-from config import MASTER_MODE, default_today
+from config import default_today
 from data import DATASET_LABEL, ITEMS, SUPPLIERS
 from master import item_rows, to_json
 from menu import Leaf
@@ -49,11 +49,9 @@ def store(leaf: Leaf):
 
 @register("set.items")
 def items(leaf: Leaf):
-    src = "data/real" if MASTER_MODE == "real" else "data"
-    st.caption(f"품목 마스터입니다 ({DATASET_LABEL}). 원본은 `{src}/items.csv`(거래처는 `{src}/suppliers.csv`)이며, 엑셀에서 편집한 뒤 앱을 다시 시작하면 반영돼요.")
-    if MASTER_MODE == "real":
-        st.info("일 소비량·재고·리드타임·발주 요일의 **가상 값**은 `data/real/items.csv`의 출처 열(일소비량_출처, 재고_출처, 리드타임_출처)로 구분할 수 있어요.",
-                icon=":material/science:")
+    st.caption(f"품목 마스터입니다 ({DATASET_LABEL}). 원본은 `data/real/items.csv`(거래처는 `data/real/suppliers.csv`)이며, `python -m prep.app_master`로 다시 만들 수 있어요.")
+    st.info("실제 근거가 없는 값(일 소비량·리드타임·발주 요일·재고)은 비워 두고 '데이터 없음'으로 표시해요. 출처는 `items.csv`의 출처 열(일소비량_출처, 재고_출처, 리드타임_출처)에 있어요.",
+            icon=":material/database:")
     rows = pd.DataFrame(item_rows(ITEMS.values()))
     c1, c2, c3 = st.columns(3)
     major = c1.pills("대분류", ["전체", *dict.fromkeys(rows["대분류"])], default="전체", key="mst_major") or "전체"
@@ -85,7 +83,7 @@ def items(leaf: Leaf):
 
 @register("set.suppliers")
 def suppliers(leaf: Leaf):
-    st.dataframe(pd.DataFrame([{"거래처": s.name, "발주 요일": s.order_days_label, "리드타임": f"D+{s.lead_time_days}"}
+    st.dataframe(pd.DataFrame([{"거래처": s.name, "발주 요일": s.order_days_label, "리드타임": s.lead_time_label}
                                for s in SUPPLIERS.values()]), hide_index=True, width="stretch", alt="거래처별 발주 요일과 리드타임")
     st.caption("거래처 정보는 현재 코드(data.py)에서 관리합니다. 파일/DB로 옮기는 작업은 다음 단계예요.")
 

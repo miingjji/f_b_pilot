@@ -1,11 +1,11 @@
-import testenv  # noqa: F401  (FB_MASTER=sample 고정)
+import testenv  # noqa: F401  (FB_MASTER_DIR=testdata/master 고정)
 import unittest
 from pathlib import Path
 
 import pandas as pd
 
 from prep.organize import (COLUMN_DOC, build_daily, build_menu, build_menu_rollup, build_supplier_items, build_suppliers,
-                           d_notation, lead_times, normalize_supplier, split_tag, supplier_type, synthetic_lead_time)
+                           d_notation, lead_times, normalize_supplier, split_tag, supplier_type)
 
 REC_COLS = ["구분", "계정명", "품목코드_RMS", "품목코드_CK", "품목코드_매장", "거래처명", "품명", "규격", "과세면세", "단가_g", "단가",
             "환산단위", "당월발주", "차이", "당월합계_수량", "당월합계_중량_g", "당월합계_금액", "1일_수량", "1일_중량_g", "1일_금액",
@@ -78,27 +78,14 @@ class Names(unittest.TestCase):
         self.assertEqual(supplier_type("바이맥스"), "업체")
 
 
-class SyntheticLeadTime(unittest.TestCase):
-    def test_deterministic_and_within_realistic_ranges(self):
-        for name in ("가나다", "바이맥스", "하나로축산", "새업체"):
-            for kind in ("식재료", "소모품"):
-                a = synthetic_lead_time(name, kind, "업체")
-                self.assertEqual(a, synthetic_lead_time(name, kind, "업체"))               # 같은 입력은 항상 같은 값
-        for name in [f"업체{i}" for i in range(60)]:
-            self.assertTrue(1 <= synthetic_lead_time(name, "식재료", "업체") <= 3, name)
-            self.assertTrue(2 <= synthetic_lead_time(name, "소모품", "업체") <= 5, name)
-
-    def test_type_and_keyword_rules(self):
-        self.assertEqual(synthetic_lead_time("CK", "식재료", "센트럴키친(CK)"), 1)
-        self.assertIn(synthetic_lead_time("인터넷구매", "소모품", "온라인 구매처"), (2, 3))
-        self.assertEqual(synthetic_lead_time("하나로축산", "식재료", "업체"), 1)                # 신선 식재료는 다음 날
-        self.assertEqual(synthetic_lead_time("페스카꼬레아", "식재료", "업체"), 1)
-        self.assertEqual(synthetic_lead_time("다와포장", "소모품", "업체"), 4)                   # 포장재는 길게
-        self.assertEqual(synthetic_lead_time("대풍농산", "식재료", "원거래처(CK 경유 또는 입고 기록 없음)"), 1)
-
-    def test_different_names_do_not_all_collapse_to_one_value(self):
-        vals = {synthetic_lead_time(f"소모품업체{i}", "소모품", "업체") for i in range(40)}
-        self.assertGreaterEqual(len(vals), 3)
+class NoInventedLeadTime(unittest.TestCase):
+    def test_untagged_suppliers_stay_blank(self):
+        items = build_supplier_items(REC, CNT)
+        self.assertNotIn("가상", set(items["리드타임_출처"]))
+        untagged = items[items["리드타임_확인"] != "품명 태그"]
+        self.assertTrue(untagged["리드타임_적용_일"].isna().all() or (untagged["리드타임_출처"] != "품명 태그").all())
+        none = items[items["리드타임_출처"] == "데이터 없음"]
+        self.assertTrue(none["리드타임_적용_일"].isna().all())                              # 근거가 없으면 숫자를 만들어 넣지 않는다
 
 
 class SupplierItems(unittest.TestCase):
@@ -108,7 +95,7 @@ class SupplierItems(unittest.TestCase):
 
     def test_all_receiving_items_plus_count_only_items(self):
         self.assertEqual(len(self.items), 8)                          # 입고내역 7 + 실사재고에만 있는 1 (코드 없는 '양조간장'은 품명 매칭 실패)
-        self.assertEqual(int(self.items.isna().sum().sum()), 0)
+        self.assertEqual(int(self.items.drop(columns="리드타임_적용_일").isna().sum().sum()), 0)       # 리드타임은 근거가 없으면 비어 있다
 
     def test_tags_are_split_and_lead_times_parsed(self):
         r = self.by.loc["R1"]
@@ -136,16 +123,17 @@ class SupplierItems(unittest.TestCase):
         self.assertEqual(self.by.loc["R5", "발주처_원본표기"], "쿠팡저장품")
         self.assertEqual(self.by.loc["R6", "발주처"], "씨앤씨")
 
-    def test_applied_lead_time_keeps_real_values_and_labels_synthetic_ones(self):
+    def test_applied_lead_time_keeps_real_values_and_leaves_the_rest_blank(self):
         r1 = self.by.loc["R1"]                                                        # 품명 태그가 있는 품목: 실제 값
         self.assertEqual((r1["리드타임_적용_일"], r1["리드타임_출처"]), (1, "품명 태그"))
         r2 = self.by.loc["R2"]                                                        # 같은 업체(아워홈)의 태그 품목 -> 자기 태그값
         self.assertEqual((r2["리드타임_적용_일"], r2["리드타임_출처"]), (1, "품명 태그"))
-        r3 = self.by.loc["R3"]                                                        # CK: 태그 없음 -> 가상
-        self.assertEqual((r3["리드타임_적용_일"], r3["리드타임_출처"]), (1, "가상"))
+        r3 = self.by.loc["R3"]                                                        # CK: 태그 없음 -> 데이터 없음 (만들어 넣지 않는다)
+        self.assertTrue(pd.isna(r3["리드타임_적용_일"]))
+        self.assertEqual(r3["리드타임_출처"], "데이터 없음")
         self.assertEqual(r3["리드타임_수원점_일"], 0)                                   # 실제 값 열은 건드리지 않음
         self.assertEqual(r3["리드타임_확인"], "정보 없음")
-        self.assertTrue((self.items["리드타임_적용_일"] >= 1).all())
+        self.assertTrue((self.items["리드타임_적용_일"].dropna() >= 1).all())
 
     def test_untagged_item_of_a_tagged_supplier_uses_the_supplier_representative(self):
         rec = REC.copy()
@@ -219,9 +207,8 @@ class Suppliers(unittest.TestCase):
         s = self.sup
         self.assertEqual((s.loc["아워홈", "리드타임_적용_일"], s.loc["아워홈", "리드타임_출처"]), (1, "품명 태그 대표값"))
         for name in ("CK", "대만수입", "쿠팡", "씨앤씨", "바이맥스", "대풍농산", "중구샘표"):
-            self.assertEqual(s.loc[name, "리드타임_출처"], "가상", name)
-            self.assertTrue(1 <= s.loc[name, "리드타임_적용_일"] <= 5, name)
-        self.assertEqual(s.loc["CK", "리드타임_적용_일"], 1)
+            self.assertEqual(s.loc[name, "리드타임_출처"], "데이터 없음", name)
+            self.assertTrue(pd.isna(s.loc[name, "리드타임_적용_일"]), name)
         self.assertEqual(s.loc["바이맥스", "리드타임_수원점"], "정보 없음")                # 실제 값 열은 그대로
 
     def test_kind_accounts_and_totals(self):
@@ -232,7 +219,7 @@ class Suppliers(unittest.TestCase):
         self.assertEqual(self.sup.loc["바이맥스", "취급구분"], "소모품")
 
     def test_no_missing_values(self):
-        self.assertEqual(int(self.sup.isna().sum().sum()), 0)
+        self.assertEqual(int(self.sup.drop(columns="리드타임_적용_일").isna().sum().sum()), 0)
 
 
 def sales_row(day, rcpt, cancel, code, name, price, qty, net, guests=0, gtotal=0, big="음식", mid="면", small="면"):
@@ -359,16 +346,18 @@ class RealFile(unittest.TestCase):
     def test_every_supplier_and_item_has_an_applied_lead_time_with_source(self):
         sup, it = self.tables["업체_마스터"], self.tables["업체별_품목"]
         self.assertEqual(len(sup), 45)
-        self.assertTrue(sup["리드타임_적용_일"].between(1, 5).all())
         self.assertEqual(set(sup.loc[sup["리드타임_출처"] == "품명 태그 대표값", "업체명"]), {"아워홈"})      # 실제 근거가 있는 업체는 한 곳
-        self.assertEqual(int((sup["리드타임_출처"] == "가상").sum()), 44)
-        self.assertTrue(it["리드타임_적용_일"].between(1, 5).all())
+        self.assertEqual(int((sup["리드타임_출처"] == "데이터 없음").sum()), 44)
+        self.assertTrue(sup.loc[sup["리드타임_출처"] == "데이터 없음", "리드타임_적용_일"].isna().all())     # 근거 없는 값은 만들지 않는다
+        self.assertTrue(sup.loc[sup["리드타임_출처"] != "데이터 없음", "리드타임_적용_일"].between(1, 5).all())
         self.assertEqual(int((it["리드타임_출처"] == "품명 태그").sum()), 35)
-        self.assertEqual(set(it["리드타임_출처"]), {"품명 태그", "업체 태그 대표값", "가상"})
+        self.assertEqual(set(it["리드타임_출처"]), {"품명 태그", "업체 태그 대표값", "데이터 없음"})
+        self.assertTrue(it.loc[it["리드타임_출처"] == "데이터 없음", "리드타임_적용_일"].isna().all())
+        self.assertTrue(it.loc[it["리드타임_출처"] != "데이터 없음", "리드타임_적용_일"].between(1, 5).all())
         self.assertEqual(int((it["리드타임_확인"] == "품명 태그").sum()), 35)                      # 실제 값 열은 그대로
-        self.assertTrue(it.loc[it["리드타임_출처"] == "가상", "리드타임_수원점_일"].eq(0).all())
+        self.assertTrue(it.loc[it["리드타임_출처"] == "데이터 없음", "리드타임_수원점_일"].eq(0).all())
 
-    def test_synthetic_values_are_stable_across_runs(self):
+    def test_results_are_stable_across_runs(self):
         from prep.organize import build_all
         again, _ = build_all(REAL)
         pd.testing.assert_frame_equal(self.tables["업체_마스터"], again["업체_마스터"])
@@ -383,7 +372,8 @@ class RealFile(unittest.TestCase):
 
     def test_no_missing_anywhere(self):
         for name, df in self.tables.items():
-            self.assertEqual(int(df.isna().sum().sum()), 0, name)
+            left = df.drop(columns=[c for c in ("리드타임_적용_일",) if c in df])      # 리드타임은 근거가 없으면 비어 있다
+            self.assertEqual(int(left.isna().sum().sum()), 0, name)
             self.assertFalse((df.astype(str) == "").any().any(), name)
 
 

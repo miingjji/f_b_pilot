@@ -3,23 +3,33 @@ from datetime import date
 from errors import InvalidInputError
 
 WEEKDAY_KR = "월화수목금토일"
+NO_DATA = "데이터 없음"
 
 
 @dataclass(frozen=True)
 class Supplier:
     name: str
-    order_weekdays: frozenset   # 발주 가능 요일 (0=월 ... 6=일)
-    lead_time_days: int         # 발주 후 입고까지 D+N
+    order_weekdays: frozenset   # 발주 가능 요일 (0=월 ... 6=일). 비어 있으면 실제 데이터가 없는 것
+    lead_time_days: int | None  # 발주 후 입고까지 D+N. None 이면 실제 데이터가 없는 것
 
     def __post_init__(self):
-        if not self.order_weekdays or not all(0 <= d <= 6 for d in self.order_weekdays):
+        if not all(0 <= d <= 6 for d in self.order_weekdays):
             raise InvalidInputError(f"{self.name}: 발주 요일이 올바르지 않습니다.")
-        if self.lead_time_days < 0:
+        if self.lead_time_days is not None and self.lead_time_days < 0:
             raise InvalidInputError(f"{self.name}: 리드타임은 음수일 수 없습니다.")
 
     @property
+    def has_schedule(self) -> bool:
+        """발주 요일과 리드타임이 모두 실제 데이터로 정해져 있는지."""
+        return bool(self.order_weekdays) and self.lead_time_days is not None
+
+    @property
     def order_days_label(self) -> str:
-        return "/".join(WEEKDAY_KR[d] for d in sorted(self.order_weekdays))
+        return "/".join(WEEKDAY_KR[d] for d in sorted(self.order_weekdays)) or NO_DATA
+
+    @property
+    def lead_time_label(self) -> str:
+        return NO_DATA if self.lead_time_days is None else f"D+{self.lead_time_days}"
 
 
 @dataclass(frozen=True)
@@ -63,6 +73,7 @@ class Item:
     current_stock: float | None = None    # 시드 현재재고량 (기본단위)
     lead_time_override: int | None = None  # 품목별 리드타임(일). None이면 거래처 기본값
     cuisines: tuple = ()    # 주로 쓰는 업종 (한식·중식·일식·양식·카페, 공통)
+    usage_known: bool = True   # False 면 일 소비량의 실제 근거가 없다 (daily_usage_g 는 0)
 
     def __post_init__(self):
         if self.pk_weight_g <= 0 or self.box_pk <= 0:
@@ -80,8 +91,12 @@ class Item:
             raise InvalidInputError(f"{self.name}: 리드타임은 음수일 수 없습니다.")
 
     @property
-    def lead_time_days(self) -> int:
+    def lead_time_days(self) -> int | None:
         return self.supplier.lead_time_days if self.lead_time_override is None else self.lead_time_override
+
+    @property
+    def lead_time_label(self) -> str:
+        return NO_DATA if self.lead_time_days is None else f"D+{self.lead_time_days}"
 
     @property
     def box_weight_g(self) -> float:

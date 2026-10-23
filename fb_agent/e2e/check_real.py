@@ -56,7 +56,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     url = f"http://localhost:{a.port}"
     srv = subprocess.Popen([sys.executable, "-m", "streamlit", "run", "app.py", "--server.headless", "true", "--server.port", str(a.port),
-                            "--browser.gatherUsageStats", "false"], cwd=ROOT, env={**os.environ, "FB_MASTER": "real"},
+                            "--browser.gatherUsageStats", "false"], cwd=ROOT, env={k: v for k, v in os.environ.items() if k != "FB_MASTER_DIR"},
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         wait_server(a.port)

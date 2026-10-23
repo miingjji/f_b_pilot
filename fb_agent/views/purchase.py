@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-import real_sales
+import sales_data
 import reorder_engine
 import store_calendar
 from converter import parse_count
@@ -31,6 +31,7 @@ STATUS = {
     "ORDER_SOON": ("곧 발주", "yellow", ":material/schedule:"),
     "OK": ("양호", "green", ":material/check_circle:"),
     "NO_USAGE": ("소비 없음", "gray", ":material/remove_circle:"),
+    "NO_DATA": ("데이터 없음", "gray", ":material/help:"),
 }
 ACTION = ("URGENT", "ORDER_NOW", "ORDER_SOON")
 MAX_CARDS = 8   # 우선 처리 카드를 한 번에 펼치는 최대 개수 (나머지는 접어 둠)
@@ -127,7 +128,7 @@ def add_requests_bulk(todo):
 def convert_to_po(req_no: str):
     for r in ss.purchase_requests:
         if r["청구번호"] == req_no and r["상태"] == "청구":
-            lead = ITEMS[r["품목"]].lead_time_days
+            lead = ITEMS[r["품목"]].lead_time_days or 0
             ss.purchase_orders = [*ss.purchase_orders, {
                 "발주번호": f"PO-{len(ss.purchase_orders) + 1:04d}", "거래처": r["거래처"], "품목": r["품목"],
                 "수량(PK)": r["수량(PK)"], "발주일": r.get("발주예정일") or get_today(),
@@ -180,7 +181,7 @@ def chosen_day(sup: str) -> date | None:
 def item_schedule(it) -> tuple[date | None, date | None]:
     """(발주일, 입고 예정일). 업체 카드에서 고른 날이 있으면 그 날, 없으면 가장 빠른 발주 가능일."""
     od = chosen_day(it.supplier.name)
-    return (od, od + timedelta(days=it.lead_time_days)) if od else (None, None)
+    return (od, od + timedelta(days=it.lead_time_days)) if od and it.lead_time_days is not None else (None, None)
 
 
 def pick_day(sup: str, d: date):
@@ -209,8 +210,8 @@ def schedule_calendar():
     for sup in sups:
         items, days = _cart_items(sup), set(sup_days(sup))
         cur = chosen_day(sup)
-        leads = sorted({it.lead_time_days for it in items})
-        lead = f"D+{leads[0]}" if len(leads) == 1 else f"D+{leads[0]}~{leads[-1]}"
+        leads = sorted({it.lead_time_days for it in items if it.lead_time_days is not None})
+        lead = "데이터 없음" if not leads else f"D+{leads[0]}" if len(leads) == 1 else f"D+{leads[0]}~{leads[-1]}"
         with st.container(border=True):
             st.markdown(f"**{sup}** · {len(items)}개 품목 · 발주 {SUPPLIERS[sup].order_days_label} · 리드타임 {lead}")
             if cur:
@@ -365,7 +366,7 @@ def po_request_detail(leaf: Leaf):
 def po_leadtime(leaf: Leaf):
     today, cal = get_today(), get_calendar()
     st.subheader("거래처")
-    st.dataframe(pd.DataFrame([{"거래처": s.name, "발주 요일": s.order_days_label, "리드타임": f"D+{s.lead_time_days}"}
+    st.dataframe(pd.DataFrame([{"거래처": s.name, "발주 요일": s.order_days_label, "리드타임": s.lead_time_label}
                                for s in SUPPLIERS.values()]), hide_index=True, width="stretch", alt="거래처 리드타임")
     head, search = st.columns([3, 2], vertical_alignment="bottom")
     head.subheader("품목별 다음 발주 가능일")
@@ -376,7 +377,7 @@ def po_leadtime(leaf: Leaf):
         if q and q not in f"{it.name} {it.supplier.name} {it.code}".lower():
             continue
         days = order_days(it, today, cal)[:3]
-        rows.append({"품목": it.name, "거래처": it.supplier.name, "리드타임": f"D+{it.lead_time_days}",
+        rows.append({"품목": it.name, "거래처": it.supplier.name, "리드타임": it.lead_time_label,
                      "다음 발주 가능일": " · ".join(fmt_date(d) for d in days) or "-",
                      "입고 예정": " · ".join(fmt_date(d + timedelta(days=it.lead_time_days)) for d in days) or "-"})
     if q:
@@ -392,7 +393,7 @@ def po_auto(leaf: Leaf):
     results = current_results()
     n = {s: sum(r.status == s for _, _, r in results) for s in STATUS}
     kpis([("긴급", f"{n['URGENT']}개", None), ("발주 필요", f"{n['ORDER_NOW'] + n['ORDER_SOON']}개", None),
-          ("양호", f"{n['OK'] + n['NO_USAGE']}개", None)])
+          ("양호", f"{n['OK'] + n['NO_USAGE']}개", None), ("데이터 없음", f"{n['NO_DATA']}개", None)])
     st.caption(f"'{get_store()}' 현재 재고 기준입니다. 실제 재고는 '매장별 재고입력'에서 바꿀 수 있어요.")
     st.subheader("우선 처리")
     todo = [(it, g, r) for it, g, r in results if r.status in ACTION]
@@ -477,12 +478,11 @@ def add_engine_requests(reqs: list):
 
 @register("po.engine")
 def po_engine(leaf: Leaf):
-    st.caption("거래처 청구·입고 이력(2025~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
+    st.caption("거래처 청구·입고 이력(2024~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
                "월말 실사재고(수불부)가 있으면 재고를 추정해 참고로 보여 주고, 주문 간격이 길어 습관으로 판단할 수 없는 품목은 재고로 판단합니다.")
     has_data = (reorder_engine.DATA / "2026" / "구매청구_정제.csv").exists()
-    if get_store() != real_sales.REAL_STORE or not has_data:
-        st.info(f"이력 기반 발주 추천은 실제 청구·입고 이력이 있는 '{real_sales.REAL_STORE}'에서만 제공합니다. "
-                "다른 매장은 '자동 발주 추천'(재고 기준)을 이용해 주세요.", icon=":material/info:")
+    if get_store() != sales_data.STORE or not has_data:
+        st.info(f"이력 기반 발주 추천은 실제 청구·입고 이력이 있는 '{sales_data.STORE}'에서만 제공합니다.", icon=":material/info:")
         return
     stamp = _engine_stamp()
     e = _engine(stamp)
@@ -691,6 +691,9 @@ def io_loss(leaf: Leaf):
 def io_transfer_request(leaf: Leaf):
     me = get_store()
     st.caption(f"'{me}'에서 다른 매장으로 물품 이체를 요청합니다.")
+    if not [x for x in STORES if x != me]:
+        st.info("이체할 다른 매장이 등록되어 있지 않아요. 매장이 추가되면 이 화면에서 요청할 수 있어요.", icon=":material/database_off:")
+        return
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)
         to = c1.selectbox("받는 매장", [s for s in STORES if s != me])
@@ -735,6 +738,8 @@ def stock_flow(leaf: Leaf):
     week_ago = today - timedelta(days=7)
     rows = []
     for it, g, _r in current_results():
+        if not it.usage_known:                           # 일 소비량 근거가 없으면 주간 출고를 계산할 수 없다
+            continue
         pk = it.pk_weight_g
         unit, f = display_unit(it)                       # 병·캔이 있으면 낱개, 없으면 품목의 발주단위로 센다
         inn = sum(r["수량(PK)"] for r in ss.receipts if r["품목"] == it.name and r["입고일"] > week_ago)
@@ -819,7 +824,7 @@ def stock_input(leaf: Leaf):
               help="현재 입력값을 '매장별 재고입력 이력'에 남깁니다.")
     n = {s: sum(r.status == s for _, _, r in results) for s in STATUS}
     kpis([("긴급", f"{n['URGENT']}개", None), ("발주 필요", f"{n['ORDER_NOW'] + n['ORDER_SOON']}개", None),
-          ("양호", f"{n['OK'] + n['NO_USAGE']}개", None), ("입력 오류", f"{len(errors)}개", None)])
+          ("양호", f"{n['OK'] + n['NO_USAGE']}개", None), ("데이터 없음", f"{n['NO_DATA']}개", None), ("입력 오류", f"{len(errors)}개", None)])
     with st.expander("품목 하나만 빠르게 확인", icon=":material/search:"):
         name = st.selectbox("품목", list(ITEMS), key="quick_item")
         item = ITEMS[name]
@@ -847,15 +852,15 @@ def stock_history(leaf: Leaf):
 @register("stock.forecast")
 def stock_forecast(leaf: Leaf):
     results = current_results()
-    rows = [{"품목코드": it.code, "품목": it.name, "분류": it.mid, "재고": stock_of(it, g), "일 소비": stock_of(it, it.daily_usage_g),
-             "안전재고": stock_of(it, safety_stock(it)),
-             "소진율(%/일)": round(it.daily_usage_g / g * 100, 1) if g else None,
+    rows = [{"품목코드": it.code, "품목": it.name, "분류": it.mid, "재고": stock_of(it, g), "일 소비": stock_of(it, it.daily_usage_g) if it.usage_known else None,
+             "안전재고": stock_of(it, safety_stock(it)) if it.usage_known else None,
+             "소진율(%/일)": round(it.daily_usage_g / g * 100, 1) if g and it.usage_known else None,
              "잔여일": r.days_left, "상태": STATUS[r.status][0]} for it, g, r in results]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="안전재고와 소진율 예측",
                  column_config={"잔여일": st.column_config.ProgressColumn("잔여일", min_value=0, max_value=14, format="%.1f일")})
     st.subheader("14일 재고 예측")
     st.caption("현재 재고에서 일 소비량만큼 줄어드는 단순 예측입니다 (입고 미반영). 기본으로 잔여일이 짧은 8개를 보여줘요.")
-    usable = [(it, g, r) for it, g, r in results if it.daily_usage_g > 0]
+    usable = [(it, g, r) for it, g, r in results if it.usage_known and it.daily_usage_g > 0 and r.days_left is not None]
     default = [it.name for it, _g, _r in sorted(usable, key=lambda x: x[2].days_left)[:8]]
     picked = st.multiselect("품목", [it.name for it, _g, _r in usable], default=default, key="fc_items")
     days = range(0, 15)

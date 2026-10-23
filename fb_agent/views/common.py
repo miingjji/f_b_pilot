@@ -4,32 +4,28 @@ from datetime import date, timedelta
 
 import streamlit as st
 
-import real_sales
+import sales_data
 import style
-import sample_data as sd
 from state import get_store, get_today
 
 
-def sample_notice(what: str = "POS"):
-    st.caption(f":material/science: 샘플 데이터입니다 — {what} 연동 전 화면 구성용이며, "
-               f"'{get_store()}' 기준으로 값이 달라집니다.")
+def sales_anchor():
+    """매출 화면의 기준일: 오늘, 단 데이터가 끝난 뒤라면 마지막 영업일."""
+    return sales_data.anchor(get_today())
 
 
 def sales_notice(what: str = "POS"):
-    """매출 화면 안내 (마크다운이라 ~ 는 \\~ 로 적는다: 한 쌍이면 취소선이 된다): 실제 모드의 수원점은 실제 매출 기간을, 그 밖은 샘플 안내를 보여 준다."""
-    if sd._real(get_store()):
-        a, b = real_sales.span()
-        txt = (f":material/database: 수원점 {a:%Y-%m-%d}\\~{b:%m-%d}은 영수증 단위 실제 매출입니다.")
-        if real_sales.available_2026():
-            t = real_sales.totals_2026()
-            settle = real_sales.SETTLE_2026.exists()
-            txt += (f" {t.index.min():%Y-%m-%d}\\~{t.index.max():%m-%d}은 일자별 실제 매출(총매출·할인·순매출·영수증수)이고, "
-                    + ("객수·결제수단·시간대 구간(10\\~13·14\\~17·18\\~21시)은 월별 정산 실제 값에 맞췄습니다. " if settle else "객수는 영수증수로 추정한 값입니다. ")
-                    + "**일별 시간대 세부·메뉴·영수증은 추정값**이니 메뉴·발주 판단에는 12월 실제 데이터를 참고하세요.")
-        txt += " 그 밖의 날짜는 실제 구성비를 따른 가상 값이고, 취소 사유·처리자와 간편결제(원본에 구분 없음)도 가상·미구분입니다."
-        st.caption(txt)
-    else:
-        sample_notice(what)
+    """매출 화면 안내: 실제 POS 데이터의 기간과 기준일."""
+    a, b = sales_data.first_date(), sales_data.last_date()
+    txt = f":material/database: 수원점 실제 {what} 데이터입니다 ({a:%Y-%m-%d}\\~{b:%Y-%m-%d})."
+    if get_today() > b:
+        txt += f" 데이터가 {b:%Y-%m-%d}까지라 이 날을 기준일로 보여 줍니다."
+    st.caption(txt)
+
+
+def no_data(what: str = "표시할 데이터가 없어요"):
+    """실제 데이터가 없을 때 안내 (가상 값으로 채우지 않는다)."""
+    st.info(f"{what}", icon=":material/database_off:")
 
 
 def won(n) -> str:
@@ -63,7 +59,7 @@ def pct_delta(now: float, before: float) -> str:
 
 def date_range(label: str, days: int, key: str) -> tuple[date, date]:
     """기간 선택. 선택 도중(시작일만)에는 시작=종료로 처리."""
-    end = get_today()
+    end = sales_anchor()
     with st.container(key="filterbar"):                     # 필터는 화면 상단의 카드형 바에 둔다
         value = st.date_input(label, value=(end - timedelta(days=days - 1), end), key=key, max_value=end)
     if isinstance(value, (tuple, list)):

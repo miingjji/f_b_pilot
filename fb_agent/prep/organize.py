@@ -16,7 +16,6 @@
 """
 import argparse
 import re
-import zlib
 from pathlib import Path
 
 import pandas as pd
@@ -73,30 +72,11 @@ def supplier_type(name: str) -> str:
     return "업체"
 
 
-FRESH_WORDS = ("축산", "미트", "수산", "페스카", "농산", "청과", "야채")     # 신선 식재료 업체는 다음 날 입고로 가정
-PACKING_WORDS = ("포장", "패키지", "팩", "광고")                           # 포장·제작물은 길게 가정
-FOOD_DAYS = (1, 2, 2, 3)
-SUPPLY_DAYS = (2, 3, 3, 4, 5)
-
-
-def synthetic_lead_time(name: str, kind: str, stype: str) -> int:
-    """파일에 리드타임이 없는 업체를 위한 **가상 값** (실제 데이터가 아님).
-
-    업체 유형·취급 구분·업체명 키워드로 현실적인 범위에서 정하고, 같은 이름은 항상 같은 값이 나오도록 이름으로 고정한다.
-      센트럴키친(CK) D1 | 원거래처(CK 경유) D1 | 온라인 구매 D2~3 | 신선 식재료 D1 | 식재료 D1~3 | 포장·제작물 D4 | 소모품 D2~5
-    """
-    h = zlib.crc32(name.encode("utf-8"))
-    if stype == "센트럴키친(CK)" or stype.startswith("원거래처"):
-        return 1
-    if stype == "온라인 구매처":
-        return (2, 3)[h % 2]
-    if kind == "식재료":
-        return 1 if any(w in name for w in FRESH_WORDS) else FOOD_DAYS[h % len(FOOD_DAYS)]
-    return 4 if any(w in name for w in PACKING_WORDS) else SUPPLY_DAYS[h % len(SUPPLY_DAYS)]
+NO_DATA = "데이터 없음"                         # 실제 근거가 없는 값은 만들지 않고 이렇게 표시한다
 
 
 def supplier_lead_map(items: pd.DataFrame) -> dict:
-    """업체 -> (적용 리드타임(일), 출처). 품명 태그가 있는 업체는 태그의 수원점 대표값, 나머지는 가상 값."""
+    """업체 -> (적용 리드타임(일), 출처). 품명 태그가 있는 업체는 태그의 수원점 대표값, 나머지는 (None, '데이터 없음')."""
     out = {}
     for n in sorted(set(items["발주처"]) | set(items["원거래처"])):
         direct = items[items["발주처"] == n]
@@ -104,11 +84,7 @@ def supplier_lead_map(items: pd.DataFrame) -> dict:
         if len(tagged):
             out[n] = (int(tagged["리드타임_수원점_일"].mode().min()), "품명 태그 대표값")
             continue
-        related = items[(items["발주처"] == n) | (items["원거래처"] == n)]
-        kinds = set(related["품목구분"])
-        kind = next(iter(kinds)) if len(kinds) == 1 else "혼합"
-        stype = supplier_type(n) if len(direct[direct["입고내역_있음"]]) else "원거래처(CK 경유 또는 입고 기록 없음)"
-        out[n] = (synthetic_lead_time(n, kind, stype), "가상")
+        out[n] = (None, NO_DATA)
     return out
 
 
@@ -203,8 +179,8 @@ def build_supplier_items(rec: pd.DataFrame, cnt: pd.DataFrame) -> pd.DataFrame:
             applied.append((int(r["리드타임_수원점_일"]), "품명 태그"))
         else:
             days, src = leads[r["발주처"]]
-            applied.append((days, "업체 태그 대표값" if src == "품명 태그 대표값" else "가상"))
-    df["리드타임_적용_일"] = [a[0] for a in applied]
+            applied.append((days, "업체 태그 대표값" if src == "품명 태그 대표값" else NO_DATA))
+    df["리드타임_적용_일"] = pd.array([a[0] for a in applied], dtype="Int64")
     df["리드타임_출처"] = [a[1] for a in applied]
     cols = list(df.columns)
     cols.insert(cols.index("리드타임_확인") + 1, cols.pop(cols.index("리드타임_적용_일")))
@@ -333,8 +309,8 @@ COLUMN_DOC = {
         "리드타임_수원점": "품명 태그 `[수Dn/부Dn]`의 수원점 값. 태그가 없으면 '정보 없음'",
         "리드타임_부점": "품명 태그의 '부' 값 (부산점으로 추정, 확인 필요)",
         "리드타임_확인": "리드타임을 알아낸 근거 (품명 태그 / 정보 없음). 실제 데이터에서 읽은 값만 해당",
-        "리드타임_적용_일": "발주 계산에 쓰는 리드타임(일). 품명 태그가 있으면 그 값, 없으면 **가상 값**(실제 데이터 아님)",
-        "리드타임_출처": "품명 태그 대표값(실제) / 가상 (업체 유형·취급 구분·이름 기준으로 만든 값)",
+        "리드타임_적용_일": "발주 계산에 쓰는 리드타임(일). 품명 태그가 있으면 그 값, 없으면 비어 있음(데이터 없음)",
+        "리드타임_출처": "품명 태그 대표값 / 데이터 없음",
         "태그품목수": "리드타임 태그가 붙은 품목 수",
         "D표기_품목수": "품명에 D 표기(D1, D-2 등)가 있는 품목 수 (의미 확인 필요: 리드타임 또는 발주 마감일)",
         "D표기": "품명에 쓰인 D 표기 종류",
@@ -357,8 +333,8 @@ COLUMN_DOC = {
         "당월입고금액": "이번 달 입고 금액(원)", "당월입고일수": "이번 달 입고가 있었던 날 수",
         "리드타임_수원점_일": "품명 태그의 수원점 리드타임(일). 정보 없으면 0", "리드타임_부점_일": "품명 태그의 '부' 리드타임(일). 정보 없으면 0",
         "리드타임_확인": "품명 태그 / 정보 없음 (0일과 구분하는 열). 실제 데이터에서 읽은 값만 해당",
-        "리드타임_적용_일": "발주 계산에 쓰는 리드타임(일). 품명 태그가 있으면 그 값, 없으면 업체 대표값 또는 **가상 값**",
-        "리드타임_출처": "품명 태그 / 업체 태그 대표값 (실제) / 가상 (실제 데이터 아님)",
+        "리드타임_적용_일": "발주 계산에 쓰는 리드타임(일). 품명 태그가 있으면 그 값, 없으면 업체 대표값, 그것도 없으면 비어 있음(데이터 없음)",
+        "리드타임_출처": "품명 태그 / 업체 태그 대표값 / 데이터 없음",
         "실사재고수량": "실사재고 수량 (규격 단위)", "실사재고중량_g": "실사재고 중량(g)",
         "입고내역_있음": "입고내역 시트에 있는 품목인지", "실사재고_있음": "실사재고 시트와 연결됐는지 (연결 안 되면 재고는 0으로 표시)",
     },
@@ -434,9 +410,8 @@ def write_outputs(tables: dict, out: Path) -> list[Path]:
     doc_rows = [{"표": t, "열": c, "설명": d} for t, cols in COLUMN_DOC.items() for c, d in cols.items()]
     pd.DataFrame(doc_rows).to_csv(out / "열_설명.csv", index=False, encoding="utf-8-sig")
     readme = ["# 정리된 데이터 파일", "", "`data/f_b_menu_data.md`에서 만든 업체·품목·메뉴·매출 표입니다 (모두 `python -m prep.organize`로 다시 만들 수 있음).", "",
-              "> **주의: 리드타임의 `가상` 값은 실제 데이터가 아닙니다.** 원본 파일에는 아워홈 한 곳의 품명 태그에만 리드타임이 있어서,",
-              "> 나머지 업체는 업체 유형·취급 구분·이름 기준의 현실적인 값을 만들어 `리드타임_적용_일`에 넣고 `리드타임_출처`를 `가상`으로 표시했습니다.",
-              "> 실제 값(`리드타임_수원점`, `리드타임_부점`, `리드타임_확인`)은 그대로 두었습니다. 실제 리드타임을 알게 되면 `data/` 쪽 값을 바꾸면 됩니다.", ""]
+              "> **리드타임은 품명 태그가 있는 품목·업체에만 값이 있습니다.** 나머지는 만들어 넣지 않고 `데이터 없음`으로 비워 두었습니다.",
+              "> 실측 리드타임은 구매청구 기록으로 `python -m prep.app_master`가 계산해 앱 마스터에 넣습니다.", ""]
     for t, desc in TABLE_DESCRIPTION.items():
         readme += [f"## {t}  ({len(tables[t]):,}행)", desc, "", "| 열 | 설명 |", "|---|---|",
                    *[f"| {c} | {d} |" for c, d in COLUMN_DOC[t].items()], ""]

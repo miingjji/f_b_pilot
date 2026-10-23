@@ -19,7 +19,7 @@ from models import StoreCalendar
 DATA = Path(__file__).resolve().parent / "data"
 CAL = DATA / "calendar"
 LUNAR = {   # 연도: (설날 당일, 추석 당일)
-    2025: (date(2025, 1, 29), date(2025, 10, 6)), 2026: (date(2026, 2, 17), date(2026, 9, 25)),
+    2024: (date(2024, 2, 10), date(2024, 9, 17)), 2025: (date(2025, 1, 29), date(2025, 10, 6)), 2026: (date(2026, 2, 17), date(2026, 9, 25)),
     2027: (date(2027, 2, 7), date(2027, 9, 15)), 2028: (date(2028, 1, 27), date(2028, 10, 3)),
     2029: (date(2029, 2, 13), date(2029, 9, 22)), 2030: (date(2030, 2, 3), date(2030, 9, 12)),
 }
@@ -42,12 +42,12 @@ def fixed_closures(year: int) -> dict:
 @lru_cache(maxsize=1)
 def observed_closures() -> dict:
     """일자별 매출 정제 파일의 무매출일. 고정 휴점이 아니면 '월요일 휴점'(월요일) 또는 '기타 무매출'로 이름 붙인다."""
-    out = {}
+    out, entered = {}, entered_closures()
     for f in sorted((DATA / "cleaned").glob("20*/매출일자별_정제.csv")):
         t = pd.read_csv(f)
         for s in t.loc[t["영업여부"] == "무매출일", "매출일자"]:
             d = date.fromisoformat(s)
-            out[d] = fixed_closures(d.year).get(d) or ("월요일 휴점" if d.weekday() == 0 else "기타 무매출")
+            out[d] = fixed_closures(d.year).get(d) or entered.get(d) or ("월요일 휴점" if d.weekday() == 0 else "기타 무매출")
     return out
 
 

@@ -120,7 +120,7 @@ class Book:
     by_item: dict
 
 
-def load_book(years=(2025, 2026)) -> Book:
+def load_book(years=(2024, 2025, 2026)) -> Book:
     r = pd.concat([pd.read_csv(DATA / str(y) / "구매청구_정제.csv", dtype={"품목코드_RMS": str}) for y in years], ignore_index=True)
     for c in ("청구일자", "납기일자"):
         r[c] = pd.to_datetime(r[c]).dt.date
