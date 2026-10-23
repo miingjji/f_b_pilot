@@ -29,7 +29,7 @@ FB_MASTER=sample streamlit run app.py   # 샘플 마스터 (소모품 28개)
 FB_MASTER=real streamlit run app.py     # 실제 기반 마스터 강제 (없으면 안내 오류)
 ./run_real.sh                           # data/real/ 이 없으면 python -m prep.app_master 로 만든 뒤 실행
 ```
- 일소비량·발주 요일·리드타임·일부 재고는 가상 값이며
+ 일소비량·발주 요일·리드타임·재고는 실제 근거가 있는 값만 채우고, 없으면 비워 앱에 `데이터 없음`으로 보입니다.
 매출 화면은 수원점 2025-12 실제 매출을 씁니다 (원본이 없는 날짜·매장은 실제 12월의 요일·시간대 패턴을 따른 가상 값, 기준일 기본값은 오늘). 출처는 `data/real/items.csv`의 `*_출처` 열에 있습니다 ([docs/DATA_CLEANING.md](docs/DATA_CLEANING.md)).
 
 CLI로 한 품목만 계산: `python main.py 짜사이 "1pk 300g"`

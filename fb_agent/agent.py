@@ -23,12 +23,12 @@ MAX_LIST = 8     # 답변에 나열하는 품목 수 (품목이 수백 개여도
 
 def topic_questions(items: dict) -> dict:
     """주제별 추천 질문. 예시 품목은 현재 마스터에서 소비가 있는 첫 품목."""
-    name = next((n for n, it in items.items() if it.daily_usage_g > 0), next(iter(items), "품목"))
+    name = next((n for n, it in items.items() if it.usage_known and it.daily_usage_g > 0), next(iter(items), "품목"))
     return {k: [q.format(item=name) for q in v] for k, v in _TOPIC_BASE.items()}
 
 
 TOPIC_QUESTIONS = topic_questions(ITEMS)
-STATUS_LABEL = {"URGENT": "긴급", "ORDER_NOW": "지금 발주", "ORDER_SOON": "곧 발주", "OK": "양호", "NO_USAGE": "소비 없음"}
+STATUS_LABEL = {"URGENT": "긴급", "ORDER_NOW": "지금 발주", "ORDER_SOON": "곧 발주", "OK": "양호", "NO_USAGE": "소비 없음", "NO_DATA": "데이터 없음"}
 
 GREETING = ("안녕하세요, F&B Agent입니다. 재고·발주와 매장 일정에 대해 물어보세요.\n\n"
             "아래 추천 질문을 눌러 보셔도 좋아요.")
@@ -81,7 +81,7 @@ def answer(prompt: str, ctx: AgentContext) -> str:
         if not ctx.recs:
             return "아직 재고 정보가 없어요. '매출/재고 관리' 메뉴에서 실사 재고를 입력하거나 파일을 올려 주세요."
         counts = Counter(r.status for r in ctx.recs)
-        summary = " · ".join(f"{STATUS_LABEL[s]} {counts[s]}" for s in ("URGENT", "ORDER_NOW", "ORDER_SOON", "OK", "NO_USAGE") if counts[s])
+        summary = " · ".join(f"{STATUS_LABEL[s]} {counts[s]}" for s in ("URGENT", "ORDER_NOW", "ORDER_SOON", "OK", "NO_USAGE", "NO_DATA") if counts[s])
         tight = sorted((r for r in ctx.recs if r.days_left is not None), key=lambda r: r.days_left)[:MAX_LIST]
         lines = [f"- **{r.item}** [{STATUS_LABEL[r.status]}] 잔여 약 {r.days_left:.1f}일 (소진 {fmt_date(r.stockout_date)})" for r in tight]
         return (f"재고 현황입니다. (전체 {len(ctx.recs)}개 품목: {summary})\n\n가장 먼저 떨어질 품목:\n\n" + "\n".join(lines)
@@ -93,8 +93,8 @@ def answer(prompt: str, ctx: AgentContext) -> str:
         if hits:                                         # 품목명(또는 코드)이 들어 있으면 그 품목만, 이름이 긴 쪽 우선
             it = ITEMS[max(hits, key=len)]
             return (f"**{it.name}** 는 {it.supplier.name}에서 발주 가능 요일은 {it.supplier.order_days_label}이고, "
-                    f"리드타임은 D+{it.lead_time_days}입니다.")
-        lines = [f"- **{s.name}** · 발주 {s.order_days_label} · D+{s.lead_time_days}" for s in SUPPLIERS.values()]
+                    f"리드타임은 {it.lead_time_label}입니다.")
+        lines = [f"- **{s.name}** · 발주 {s.order_days_label} · {s.lead_time_label}" for s in SUPPLIERS.values()]
         return "거래처별 리드타임입니다.\n\n" + "\n".join(lines)
 
     if _has(q, "스케줄", "근무", "교대", "배치"):

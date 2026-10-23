@@ -185,6 +185,13 @@ class Loader(unittest.TestCase):
         g = self.items([self.row(기본단위="g", EA당수량="")])["냅킨"]
         self.assertEqual(g.ea_weight_g, 0)                                                  # g·ml 품목은 EA 미지원이 기본
 
+    def test_blank_usage_stock_and_lead_time_mean_no_data(self):
+        write_csv(self.tmp / "suppliers.csv", ["거래처명", "발주요일", "기본리드타임", "취급분야"], [["갑", "", "", ""]])
+        out = self.items([self.row(일소비량="", 안전재고량="", 현재재고량="")])["냅킨"]
+        self.assertFalse(out.usage_known)
+        self.assertEqual((out.daily_usage_g, out.safety_stock_g, out.current_stock), (0.0, None, None))
+        self.assertEqual((out.lead_time_days, out.supplier.order_days_label, out.supplier.has_schedule), (None, "데이터 없음", False))
+
     def test_errors_name_the_row_and_reason(self):
         cases = [
             ([self.row(), self.row(품목명="다른")], "코드가 중복"),
@@ -195,7 +202,7 @@ class Loader(unittest.TestCase):
             ([self.row(PK당수량=0)], "0보다 커야"),
             ([self.row(안전재고량=-1)], "음수"),
             ([self.row(리드타임="1.5")], "정수"),
-            ([self.row(일소비량="")], "비어 있습니다"),
+            ([self.row(일소비량="abc")], "숫자가 아닙니다"),
             ([self.row(품목코드="")], "필수"),
         ]
         for rows, msg in cases:

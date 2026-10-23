@@ -19,7 +19,7 @@ def demo_items(items: dict) -> list:
     """시드 발주서·입고에 쓸 품목 최대 3개. 샘플 마스터는 원래 데모 품목, 그 외에는 소비가 있는 품목을 업체가 겹치지 않게."""
     if all(n in items for n in DEMO_NAMES):
         return [items[n] for n in DEMO_NAMES]
-    pool = [it for it in items.values() if it.daily_usage_g > 0] or list(items.values())
+    pool = [it for it in items.values() if it.usage_known and it.daily_usage_g > 0] or list(items.values())
     picked, seen = [], set()
     for it in pool:
         if it.supplier.name not in seen:

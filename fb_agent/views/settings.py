@@ -85,7 +85,7 @@ def items(leaf: Leaf):
 
 @register("set.suppliers")
 def suppliers(leaf: Leaf):
-    st.dataframe(pd.DataFrame([{"거래처": s.name, "발주 요일": s.order_days_label, "리드타임": f"D+{s.lead_time_days}"}
+    st.dataframe(pd.DataFrame([{"거래처": s.name, "발주 요일": s.order_days_label, "리드타임": s.lead_time_label}
                                for s in SUPPLIERS.values()]), hide_index=True, width="stretch", alt="거래처별 발주 요일과 리드타임")
     st.caption("거래처 정보는 현재 코드(data.py)에서 관리합니다. 파일/DB로 옮기는 작업은 다음 단계예요.")
 

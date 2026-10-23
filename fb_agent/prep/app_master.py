@@ -3,21 +3,18 @@
     python -m prep.app_master [--src data/source/수불부/2026/2026-09.md] [--out data/real]   (기본: 가장 최근 달의 수불부)
     FB_MASTER=real streamlit run app.py        # 이 마스터로 앱 실행
 
-정리된 업체·품목 표(prep.organize)를 앱의 마스터 형식으로 바꾼다. 파일에 없는 값은 가상으로 채우고, 출처 열을 남긴다.
+정리된 업체·품목 표(prep.organize)를 앱의 마스터 형식으로 바꾼다. 실제 근거가 없는 값은 만들지 않고 비워 두며(앱에서는 '데이터 없음'), 출처 열을 남긴다.
 
-  일 소비량   ① 표준사용량(g) 시트의 재료별 합계 ÷ 그 달 일수 (실제 근거)  ② 이번 달 입고량 ÷ 그 달 일수 (입고 기반 추정)
-              ③ 재고만 있는 품목은 재고 ÷ 30일 (가상)  ④ 근거가 없으면 0 (소비 없음)
-  현재 재고   실사재고. 단, 실사에서 0으로만 잡힌 소모품 중 쓰는 품목은 일 소비량 × 10~30일 (가상)
-  안전 재고   일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) — 정책 값
-  발주 요일   가상. 월~토 중 입고일이 일요일이 아닌 요일에서 업체 유형·리드타임에 맞는 개수를 고름
-  리드타임    prep.organize 의 적용 리드타임 (아워홈만 실제 태그, 나머지 가상)
+  일 소비량   ① 표준사용량(g) 시트의 재료별 합계 ÷ 그 달 일수  ② 이번 달 입고량 ÷ 그 달 일수 (입고 기반 추정)  ③ 근거가 없으면 비움
+  현재 재고   실사재고. 쓰는 소모품이 실사에서 0으로만 잡혀 있으면(세지 않은 것) 비움
+  안전 재고   일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) — 정책 값. 소비량이나 리드타임이 없으면 비움
+  발주 요일   구매청구 기록(2024~2026)에서 청구가 가장 많은 요일 (청구 10건 이상인 업체만). 없으면 비움
+  리드타임    품명 태그(수불부) → 구매청구 실측 권장 리드타임(청구→입고 일수의 90분위, 10건 이상인 업체) → 비움
 """
 import argparse
 import calendar
 import math
 import re
-import zlib
-from itertools import combinations
 from pathlib import Path
 
 import pandas as pd
@@ -30,8 +27,9 @@ from prep.organize import build_all
 SHEET_STD = "표준사용량(g)"
 DAYS = 31                                    # 월 일수 기본값 (2025년 12월). 파일 이름이 YYYY-MM 이면 그 달 일수를 쓴다
 WEEKDAYS = "월화수목금토"
-STOCK_ONLY_COVER_DAYS = 30                   # 재고만 있고 사용 근거가 없는 품목의 가상 소비 (재고가 30일치라고 가정)
-SYNTH_STOCK_DAYS = (10, 30)                  # 실사에서 0으로 잡힌 소모품의 가상 재고 일수 범위
+NO_DATA = "데이터 없음"
+MEASURED = "구매청구 실측"
+MEASURED_GRADES = ("높음", "보통")           # 청구 10건 이상인 업체만 실측 값으로 쓴다
 
 
 # ---------------------------------------------------------------- 정책/가상 값
@@ -40,27 +38,36 @@ def safety_days(lead: int) -> int:
     return max(1, math.ceil(lead / 2))
 
 
-def order_weekdays(name: str, lead: int, stype: str, kind: str) -> str:
-    """가상 발주 요일. 월~토 중 입고일(발주일+리드타임)이 일요일이 아닌 날만 쓰고, 이름으로 값을 고정한다."""
-    valid = [d for d in range(6) if (d + lead) % 7 != 6]
-    if stype == "센트럴키친(CK)":
-        k = 6
-    elif stype == "온라인 구매처":
-        k = 5
-    elif kind == "식재료" and lead <= 1:
-        k = 3
-    elif lead <= 3:
-        k = 2
-    else:
-        k = 1
-    k = min(k, len(valid))
+def _supplier_key(name: str) -> set:
+    """'신선농원(구드래)' -> {'신선농원(구드래)', '신선농원', '구드래'}, '(주)가온에프엔비' -> {..., '가온에프엔비'}. 앱의 업체명과 맞춰 보는 용도."""
+    base = re.sub(r"^\(주\)|\(주\)$", "", name.strip())
+    out = {name.strip(), base}
+    m = re.fullmatch(r"(.+?)\((.+)\)", base)
+    if m:
+        out |= {m[1], m[2]}
+    return out
 
-    def spread(c):                                           # 요일이 고르게 퍼진 조합일수록 좋음 (가장 가까운 두 요일 간격이 큼)
-        return min((b - a for a, b in zip(c, c[1:])), default=99)
 
-    combos = sorted(combinations(valid, k), key=lambda c: (-spread(c), c))[:3]
-    pick = combos[zlib.crc32(name.encode("utf-8")) % len(combos)]
-    return "".join(WEEKDAYS[d] for d in pick)
+def measured_suppliers(cleaned: Path | None = None) -> dict:
+    """구매청구 기록(2024~2026)에서 업체별 실측값 {거래처 표기: (권장 리드타임(일), 발주 요일 문자열)}. 청구 10건 이상인 업체만."""
+    from prep.lead_consumption_2026 import lead_by_supplier, received_orders
+    cleaned = cleaned or Path(__file__).resolve().parent.parent / "data" / "cleaned"
+    files = sorted(cleaned.glob("20*/구매청구_정제.csv"))
+    if not files:
+        return {}
+    req = pd.concat([pd.read_csv(f, encoding="utf-8-sig", dtype=str) for f in files], ignore_index=True)
+    o = received_orders(req)
+    t = lead_by_supplier(o, req.groupby("거래처").size())
+    t = t[t["신뢰도"].isin(MEASURED_GRADES)]
+    return {r["거래처"]: (int(r["권장_리드타임_일"]), str(r["주_발주요일"])) for _, r in t.iterrows()}
+
+
+def match_measured(name: str, measured: dict):
+    """앱의 업체명에 맞는 실측값 (리드타임, 발주 요일). 없으면 None."""
+    for raw, v in measured.items():
+        if name in _supplier_key(raw):
+            return v
+    return None
 
 
 # ---------------------------------------------------------------- 표준사용량 시트
@@ -90,8 +97,25 @@ def days_in_source(src) -> int:
     return calendar.monthrange(int(m[1]), int(m[2]))[1] if m else DAYS
 
 
-def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS):
-    """(품목 표, 업체 표, 요약). 품목 표는 master.py 가 읽는 형식 + 출처 열."""
+def _supplier_lead(name: str, sup: pd.DataFrame, measured: dict):
+    """업체의 (리드타임, 출처). 수불부 태그 대표값 → 구매청구 실측 → (None, 데이터 없음)."""
+    r = sup.loc[name]
+    if r["리드타임_출처"] != NO_DATA and pd.notna(r["리드타임_적용_일"]):
+        return int(r["리드타임_적용_일"]), r["리드타임_출처"]
+    m = match_measured(name, measured)
+    return (m[0], MEASURED) if m else (None, NO_DATA)
+
+
+def _item_lead(r, sup: pd.DataFrame, measured: dict):
+    """품목의 (리드타임, 출처). 품명 태그가 있으면 그 값, 아니면 발주처(업체)의 값."""
+    if r["리드타임_출처"] == "품명 태그" and pd.notna(r["리드타임_적용_일"]):
+        return int(r["리드타임_적용_일"]), "품명 태그"
+    return _supplier_lead(r["발주처"], sup, measured)
+
+
+def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS, measured: dict | None = None):
+    """(품목 표, 업체 표, 요약). 품목 표는 master.py 가 읽는 형식 + 출처 열. measured 는 measured_suppliers() 결과."""
+    measured = measured or {}
     std_map = dict(zip(std["코드"], std["이론사용_g"]))
     sup = suppliers.set_index("업체명")
     rows, n_nocode = [], 0
@@ -110,26 +134,23 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
             usage, usage_src = theory / days, "표준사용량"
         elif recv > 0:
             usage, usage_src = recv / days, "입고 기반 추정"
-        elif stock > 0:
-            usage, usage_src = stock / STOCK_ONLY_COVER_DAYS, "가상"
         else:
-            usage, usage_src = 0.0, "근거 없음"
-        usage = round(usage, 4)
+            usage, usage_src = None, NO_DATA
+        usage = None if usage is None else round(usage, 4)
 
         stock_src = "실사재고"
-        if r["품목구분"] == "소모품" and stock == 0 and usage > 0:      # 소모품은 실사에서 0으로만 잡혀 있어 쓰는 품목만 가상 재고
-            lo, hi = SYNTH_STOCK_DAYS
-            cover = lo + zlib.crc32(code.encode("utf-8")) % (hi - lo + 1)
-            stock, stock_src = round(usage * cover, 1), "가상"
+        if r["품목구분"] == "소모품" and stock == 0 and usage:      # 쓰는 소모품이 실사에서 0으로만 잡혀 있으면 세지 않은 것: 재고를 모른다
+            stock, stock_src = None, NO_DATA
 
-        lead = int(r["리드타임_적용_일"])
-        default = int(sup.loc[r["발주처"], "리드타임_적용_일"])
+        lead, lead_src = _item_lead(r, sup, measured)
+        s_lead, _s_src = _supplier_lead(r["발주처"], sup, measured)
         rows.append({
             "품목코드": code, "품목명": r["품명"], "대분류": r["품목구분"], "중분류": r["계정명"], "기본단위": unit,
-            "PK당수량": pk, "BOX당PK": 1.0, "EA당수량": ea, "일소비량": usage,
-            "안전재고량": round(usage * safety_days(lead), 4), "현재재고량": float(stock),
-            "리드타임": lead if lead != default else "", "거래처": r["발주처"],
-            "규격": r["규격"], "일소비량_출처": usage_src, "재고_출처": stock_src, "리드타임_출처": r["리드타임_출처"],
+            "PK당수량": pk, "BOX당PK": 1.0, "EA당수량": ea, "일소비량": "" if usage is None else usage,
+            "안전재고량": "" if usage is None or lead is None else round(usage * safety_days(lead), 4),
+            "현재재고량": "" if stock is None else float(stock),
+            "리드타임": "" if lead is None or lead == s_lead else lead, "거래처": r["발주처"],
+            "규격": r["규격"], "일소비량_출처": usage_src, "재고_출처": stock_src, "리드타임_출처": lead_src,
             "원거래처": r["원거래처"],
         })
     df = pd.DataFrame(rows)
@@ -139,9 +160,10 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
 
     s_rows = []
     for name, r in sup.iterrows():
-        lead = int(r["리드타임_적용_일"])
-        s_rows.append({"거래처명": name, "발주요일": order_weekdays(name, lead, r["업체유형"], r["취급구분"]),
-                       "기본리드타임": lead, "취급분야": r["취급구분"], "발주요일_출처": "가상", "리드타임_출처": r["리드타임_출처"]})
+        lead, lead_src = _supplier_lead(name, sup, measured)
+        m = match_measured(name, measured)
+        s_rows.append({"거래처명": name, "발주요일": m[1] if m else "", "기본리드타임": "" if lead is None else lead, "취급분야": r["취급구분"],
+                       "발주요일_출처": MEASURED if m else NO_DATA, "리드타임_출처": lead_src})
     sdf = pd.DataFrame(s_rows)
     info = {"items": len(df), "suppliers": len(sdf),
             "일소비량_출처": df["일소비량_출처"].value_counts().to_dict(), "재고_출처": df["재고_출처"].value_counts().to_dict(),
@@ -152,23 +174,24 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
 def build_from_markdown(src):
     sheets = read_sheets(src)
     tables, _ = build_all(src, sheets=sheets)
-    return build_app_master(tables["업체별_품목"], tables["업체_마스터"], read_standard_usage(sheets[SHEET_STD]), days_in_source(src))
+    return build_app_master(tables["업체별_품목"], tables["업체_마스터"], read_standard_usage(sheets[SHEET_STD]), days_in_source(src),
+                            measured_suppliers())
 
 
 README = """# 실제 데이터 기반 앱 마스터
 
 `python -m prep.app_master`로 만든 파일입니다. 앱에서 쓰려면 `FB_MASTER=real streamlit run app.py`.
 
-**가상 값이 섞여 있습니다.** 출처 열로 구분하세요.
+**실제 근거가 없는 값은 만들지 않고 비워 둡니다** (앱에는 '데이터 없음'). 출처 열로 구분하세요.
 
-| 항목 | 실제 근거 | 가상/추정 |
+| 항목 | 실제 근거 | 근거가 없으면 |
 |---|---|---|
 | 품목·규격·업체·재고(식재료) | 정리된 실사재고·입고내역 | |
-| 일 소비량 | `표준사용량` (표준사용량(g) 시트 합계 ÷ 그 달 일수) | `입고 기반 추정`(입고량 ÷ 그 달 일수), `가상`(재고 ÷ 30일), `근거 없음`(0) |
-| 현재 재고 | `실사재고` | 실사에서 0으로 잡힌 소모품 중 쓰는 품목: `가상`(일 소비량 × 10~30일) |
-| 안전 재고 | | 정책 값: 일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) |
-| 리드타임 | 아워홈만 품명 태그 | 나머지 `가상` (업체 유형·취급 구분 기준) |
-| 발주 요일 | | 전부 `가상` (월~토 중 입고일이 일요일이 아닌 요일) |
+| 일 소비량 | `표준사용량` (표준사용량(g) 시트 합계 ÷ 그 달 일수), `입고 기반 추정`(입고량 ÷ 그 달 일수) | 비움 (`데이터 없음`) |
+| 현재 재고 | `실사재고` | 쓰는 소모품이 실사에서 0으로만 잡혀 세지 않은 것이면 비움 |
+| 안전 재고 | 정책 값: 일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) | 소비량·리드타임이 없으면 비움 |
+| 리드타임 | 품명 태그(수불부), `구매청구 실측`(2024~2026 청구→입고 일수 90분위, 청구 10건 이상 업체) | 비움 |
+| 발주 요일 | `구매청구 실측`(청구가 가장 많은 요일, 청구 10건 이상 업체) | 비움 |
 
 소모품의 기본단위는 규격 1개(PK)를 `개`로 센 값입니다 (환산단위 1).
 """

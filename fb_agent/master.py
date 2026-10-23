@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from errors import InvalidInputError
-from models import BASE_UNITS, Item, Supplier
+from models import BASE_UNITS, NO_DATA, Item, Supplier
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 WEEKDAYS = "월화수목금토일"
@@ -64,7 +64,8 @@ def load_suppliers(path: Path = DATA_DIR / "suppliers.csv") -> dict[str, Supplie
             if ch not in WEEKDAYS:
                 raise InvalidInputError(f"{where}: 발주요일에 알 수 없는 글자 {ch!r} (월화수목금토일)")
             days.add(WEEKDAYS.index(ch))
-        out[name] = Supplier(name, frozenset(days), _num(row, "기본리드타임", where, integer=True))
+        lead = None if row["기본리드타임"] == "" else _num(row, "기본리드타임", where, integer=True)      # 비어 있으면 실제 데이터 없음
+        out[name] = Supplier(name, frozenset(days), lead)
     return out
 
 
@@ -95,8 +96,10 @@ def load_items(suppliers: dict[str, Supplier], path: Path = DATA_DIR / "items.cs
                 pk_weight_g=_num(row, "PK당수량", where), box_pk=_num(row, "BOX당PK", where, default=1),
                 # g·ml 품목은 EA(낱개)를 선택적으로, 개수 품목은 기본단위 1개가 곧 EA
                 ea_weight_g=_num(row, "EA당수량", where, default=0 if base in ("g", "ml") else 1),
-                daily_usage_g=_num(row, "일소비량", where), supplier=suppliers[row["거래처"]],
-                safety_stock_g=_num(row, "안전재고량", where), current_stock=_num(row, "현재재고량", where),
+                daily_usage_g=_num(row, "일소비량", where, default=0.0), usage_known=row["일소비량"] != "",
+                supplier=suppliers[row["거래처"]],
+                safety_stock_g=_num(row, "안전재고량", where) if row["안전재고량"] != "" else None,
+                current_stock=_num(row, "현재재고량", where) if row["현재재고량"] != "" else None,
                 lead_time_override=None if lead == "" else _num(row, "리드타임", where, integer=True),
                 cuisines=cuisines)
         except InvalidInputError as e:
@@ -119,7 +122,7 @@ def item_rows(items) -> list[dict]:
         "품목코드": it.code, "품목명": it.name, "대분류": it.major, "중분류": it.mid,
         "기본규격/단위": it.spec, "기본단위": it.base_unit,
         "안전재고량": it.safety_stock_g, "현재재고량": it.current_stock,
-        "리드타임(일)": it.lead_time_days, "거래처": it.supplier.name,
+        "리드타임(일)": it.lead_time_days if it.lead_time_days is not None else NO_DATA, "거래처": it.supplier.name,
     } for it in items]
 
 
