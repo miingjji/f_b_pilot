@@ -4,4 +4,4 @@ set -euo pipefail
 cd "$(dirname "$0")"
 PY="${PYTHON:-python}"
 [ -f data/real/items.csv ] || "$PY" -m prep.app_master
-FB_MASTER=real exec "$PY" -m streamlit run app.py "$@"
+exec "$PY" -m streamlit run app.py "$@"

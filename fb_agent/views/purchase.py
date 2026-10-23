@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-import real_sales
+import sales_data
 import reorder_engine
 import store_calendar
 from converter import parse_count
@@ -478,12 +478,11 @@ def add_engine_requests(reqs: list):
 
 @register("po.engine")
 def po_engine(leaf: Leaf):
-    st.caption("거래처 청구·입고 이력(2025~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
+    st.caption("거래처 청구·입고 이력(2024~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
                "월말 실사재고(수불부)가 있으면 재고를 추정해 참고로 보여 주고, 주문 간격이 길어 습관으로 판단할 수 없는 품목은 재고로 판단합니다.")
     has_data = (reorder_engine.DATA / "2026" / "구매청구_정제.csv").exists()
-    if get_store() != real_sales.REAL_STORE or not has_data:
-        st.info(f"이력 기반 발주 추천은 실제 청구·입고 이력이 있는 '{real_sales.REAL_STORE}'에서만 제공합니다. "
-                "다른 매장은 '자동 발주 추천'(재고 기준)을 이용해 주세요.", icon=":material/info:")
+    if get_store() != sales_data.STORE or not has_data:
+        st.info(f"이력 기반 발주 추천은 실제 청구·입고 이력이 있는 '{sales_data.STORE}'에서만 제공합니다.", icon=":material/info:")
         return
     stamp = _engine_stamp()
     e = _engine(stamp)
@@ -692,6 +691,9 @@ def io_loss(leaf: Leaf):
 def io_transfer_request(leaf: Leaf):
     me = get_store()
     st.caption(f"'{me}'에서 다른 매장으로 물품 이체를 요청합니다.")
+    if not [x for x in STORES if x != me]:
+        st.info("이체할 다른 매장이 등록되어 있지 않아요. 매장이 추가되면 이 화면에서 요청할 수 있어요.", icon=":material/database_off:")
+        return
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)
         to = c1.selectbox("받는 매장", [s for s in STORES if s != me])

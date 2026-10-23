@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 
-import sample_data as sd
+import sales_data as sd
 import style
 from calendar_data import (CATEGORIES, MANUAL_CATEGORIES, ORDER_STATUSES, Event, build_events, cell_width, chars_per_line,
                            max_cell_events, new_event, row_height, visible_events)
@@ -15,7 +15,7 @@ from state import get_calendar, get_recs, get_store, get_today, main_width
 from unit_info import qty_for
 from viewport import is_mobile
 from views import register
-from views.common import pct_delta, sample_notice, won_short
+from views.common import pct_delta, sales_notice, won_short
 
 ss = st.session_state
 DOW = "일월화수목금토"          # 일요일 시작
@@ -86,7 +86,7 @@ def event_cards(evs: list[Event]):
         with st.container(border=True):
             top, act = st.columns([6, 1], vertical_alignment="center")
             with top:
-                st.markdown(f":{color}-badge[{icon} {label}] **{e.title}**" + (" · _샘플_" if e.sample else ""))
+                st.markdown(f":{color}-badge[{icon} {label}] **{e.title}**")
                 if e.detail:
                     st.caption(e.detail)
             if e.deletable:
@@ -171,23 +171,23 @@ def issue_panel(d: date, by_day: dict, today: date):
 
 
 def summary_cards(today: date, cal, recs):
-    store = get_store()
-    now, last_week = sd.day_sales(store, today), sd.day_sales(store, today - timedelta(days=7))
+    ref = sd.latest_day(today)                                    # 오늘이 데이터 끝보다 뒤이거나 쉬는 날이면 마지막 영업일
+    now = sd.day_sales(ref) if ref else None
+    last_week = sd.day_sales(ref - timedelta(days=7)) if ref else None
     week = build_events(ss.events, recs, cal, today, today + timedelta(days=6))
     n_week = sum(e.category != "closed" for evs in week.values() for e in evs)
     n_order = sum(r.status in ("URGENT", "ORDER_NOW", "ORDER_SOON") for r in recs)
     n_urgent = sum(r.status == "URGENT" for r in recs)
-    staff = sd.today_staff_count(store, today)
-    full = sum(1 for n, k, _w in sd.STAFF if k == "정직원"
-               and sd.month_schedule(store, today.year, today.month)[str(today.day)][n] != "휴")
+    when = f"{ref:%m-%d}" if ref else "최근"
+    cards = [
+        (f"{when} 매출", won_short(now["sales"]) if now else "데이터 없음",
+         (pct_delta(now["sales"], last_week["sales"]) + " 전주 같은 요일") if now and last_week else None),
+        (f"{when} 객수", f"{now['customers']:,}명" if now else "데이터 없음", f"객단가 {won_short(now['ticket'])}" if now else None),
+        ("발주 필요 품목", f"{n_order}개", f"긴급 {n_urgent}개"),
+        ("7일 내 일정", f"{n_week}건", f"오늘 {sum(e.category != 'closed' for e in week.get(today, []))}건"),
+    ]
     with st.container(horizontal=True):
-        for i, (label, value, delta) in enumerate([
-            ("오늘 매출 (샘플)", won_short(now["sales"]), pct_delta(now["sales"], last_week["sales"]) + " 전주 같은 요일"),
-            ("오늘 객수 (샘플)", f"{now['customers']:,}명", f"객단가 {won_short(now['ticket'])}"),
-            ("오늘 근무 (샘플)", f"{staff}명", f"정직원 {full} · 파트 {staff - full}"),
-            ("발주 필요 품목", f"{n_order}개", f"긴급 {n_urgent}개"),
-            ("7일 내 일정", f"{n_week}건", f"오늘 {sum(e.category != 'closed' for e in week.get(today, []))}건"),
-        ]):
+        for i, (label, value, delta) in enumerate(cards):
             with st.container(key=f"kpi-{zlib.crc32(label.encode()):x}"):                # style.py 의 KPI 카드 CSS 대상
                 st.html(style.kpi_chip(label, i))
                 st.metric(label, value, delta, delta_color="off", delta_arrow="off")
@@ -294,4 +294,4 @@ def dashboard(leaf: Leaf):
 
     st.caption("달력에는 직접 추가한 일정과, 재고 기반 발주·입고 일정, 매장 휴무가 함께 표시돼요. "
                "날짜를 누르면 아래 3칸이 그 날 기준으로 바뀌어요. 직접 추가한 일정은 현재 세션에만 저장됩니다.")
-    sample_notice("POS·근태")
+    sales_notice("POS")

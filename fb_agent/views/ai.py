@@ -3,7 +3,7 @@ from datetime import timedelta
 
 import streamlit as st
 
-import sample_data as sd
+import sales_data as sd
 from agent import TOPIC_QUESTIONS
 from agent_context import build_context
 from agent_panel import render_chat
@@ -13,7 +13,7 @@ from routing import go
 from state import get_calendar, get_recs, get_store, get_today
 from unit_info import qty_for
 from views import register
-from views.common import kpis, pct_delta, sample_notice, won
+from views.common import kpis, no_data, pct_delta, sales_notice, won
 
 LEVEL = {"high": ("긴급", "red", ":material/error:"), "medium": ("주의", "orange", ":material/warning:"),
          "info": ("정보", "blue", ":material/info:")}
@@ -21,23 +21,22 @@ LEVEL = {"high": ("긴급", "red", ":material/error:"), "medium": ("주의", "or
 
 @register("ai.report")
 def report(leaf: Leaf):
-    sample_notice("POS·근태")
-    store, today, recs = get_store(), get_today(), get_recs()
-    cur = sd.daily_sales(store, today, 7)
-    prev = sd.daily_sales(store, today - timedelta(days=7), 7)
+    sales_notice("POS")
+    store, recs = get_store(), get_recs()
+    end = sd.latest_day(get_today())
+    if end is None:
+        return no_data("매출 데이터가 없어요.")
+    cur, prev = sd.daily(end - timedelta(days=6), end), sd.daily(end - timedelta(days=13), end - timedelta(days=7))
     s_now, s_prev = int(cur["sales"].sum()), int(prev["sales"].sum())
-    ticket = int(cur["sales"].sum() / cur["customers"].sum())
-    labor = sd.labor_cost(store, today, 7)
-    l_pct = labor["labor"].sum() / labor["sales"].sum() * 100
+    ticket = int(cur["sales"].sum() / max(1, cur["customers"].sum()))
     todo = [r for r in recs if r.status in ("URGENT", "ORDER_NOW", "ORDER_SOON")]
-    alerts = [a for a in build_alerts(store, today, recs) if a.level != "info"]
+    alerts = [a for a in build_alerts(store, end, recs) if a.level != "info"]
 
-    kpis([("7일 매출", won(s_now), pct_delta(s_now, s_prev) + " 전주 대비"), ("객단가", won(ticket), None),
-          ("인건비율", f"{l_pct:.1f}%", None), ("발주 필요", f"{len(todo)}개", None)])
+    kpis([("7일 매출", won(s_now), (pct_delta(s_now, s_prev) + " 전주 대비") if s_prev else None), ("객단가", won(ticket), None),
+          ("발주 필요", f"{len(todo)}개", None)])
 
-    lines = [f"**{store} 주간 운영 요약 ({today - timedelta(days=6):%m/%d}~{today:%m/%d})**", "",
-             f"- 매출 {won(s_now)} (전주 대비 {pct_delta(s_now, s_prev)}), 객단가 {won(ticket)}",
-             f"- 인건비율 {l_pct:.1f}%"]
+    lines = [f"**{store} 주간 운영 요약 ({end - timedelta(days=6):%m/%d}~{end:%m/%d}, 영업일 {len(cur)}일)**", "",
+             f"- 매출 {won(s_now)}" + (f" (전주 대비 {pct_delta(s_now, s_prev)})" if s_prev else "") + f", 객단가 {won(ticket)}"]
     lines += [f"- 발주 필요: {r.item} ({r.supplier}, {qty_for(r.item, r.order_packs)}, {r.status})" for r in todo] or ["- 발주 필요 품목 없음"]
     lines += [f"- 주의: {a.title} — {a.detail}" for a in alerts] or ["- 감지된 이상징후 없음"]
     text = "\n".join(lines)
@@ -50,9 +49,9 @@ def report(leaf: Leaf):
 
 @register("ai.alerts")
 def alerts(leaf: Leaf):
-    sample_notice("POS·근태")
-    found = build_alerts(get_store(), get_today(), get_recs())
-    st.caption("재고·매출·인건비·취소·인력 배치 데이터를 규칙으로 점검한 결과입니다.")
+    sales_notice("POS")
+    found = build_alerts(get_store(), sd.anchor(get_today()), get_recs())
+    st.caption("재고·매출·취소 데이터를 규칙으로 점검한 결과입니다 (인건비·인력 배치는 근태 데이터가 없어 점검하지 않아요).")
     for i, a in enumerate(found):
         label, color, icon = LEVEL[a.level]
         with st.container(border=True):

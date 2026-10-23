@@ -1,6 +1,6 @@
 """품목·거래처 마스터 데이터 로더 (Streamlit 비의존).
 
-data/suppliers.csv, data/items.csv 를 읽어 Supplier / Item 으로 만든다. 엑셀에서 편집해도 되며
+data/real/suppliers.csv, data/real/items.csv 를 읽어 Supplier / Item 으로 만든다. 엑셀에서 편집해도 되며
 (UTF-8 또는 CP949), 잘못된 값은 행 번호와 함께 InvalidInputError 로 알려준다.
 """
 import csv
@@ -11,7 +11,7 @@ from pathlib import Path
 from errors import InvalidInputError
 from models import BASE_UNITS, NO_DATA, Item, Supplier
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = Path(__file__).resolve().parent / "data" / "real"      # 앱 마스터 기본 위치 (prep.app_master 가 생성)
 WEEKDAYS = "월화수목금토일"
 
 SUPPLIER_COLUMNS = ["거래처명", "발주요일", "기본리드타임", "취급분야"]
@@ -122,7 +122,7 @@ def item_rows(items) -> list[dict]:
         "품목코드": it.code, "품목명": it.name, "대분류": it.major, "중분류": it.mid,
         "기본규격/단위": it.spec, "기본단위": it.base_unit,
         "안전재고량": it.safety_stock_g, "현재재고량": it.current_stock,
-        "리드타임(일)": it.lead_time_days if it.lead_time_days is not None else NO_DATA, "거래처": it.supplier.name,
+        "리드타임(일)": str(it.lead_time_days) if it.lead_time_days is not None else NO_DATA, "거래처": it.supplier.name,
     } for it in items]
 
 

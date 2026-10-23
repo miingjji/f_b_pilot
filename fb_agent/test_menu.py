@@ -1,4 +1,4 @@
-import testenv  # noqa: F401  (FB_MASTER=sample 고정)
+import testenv  # noqa: F401  (FB_MASTER_DIR=testdata/master 고정)
 import re
 import unittest
 
