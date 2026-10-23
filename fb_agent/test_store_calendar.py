@@ -28,11 +28,11 @@ class FixedRules(unittest.TestCase):
 @unittest.skipUnless(HAS_DATA, "정제된 일자별 매출이 없음")
 class AgainstData(unittest.TestCase):
     def test_every_observed_closure_is_explained(self):
-        self.assertNotIn("기타 무매출", sc.observed_closures().values())          # 고정 규칙이나 월요일로 모두 설명된다
+        self.assertNotIn("기타 무매출", sc.observed_closures().values())          # 고정 규칙·월요일·휴점일_입력(2024-10-08 리뉴얼 전 정리)으로 모두 설명된다
 
     def test_fixed_closures_were_really_closed(self):
         obs = sc.observed_closures()
-        for y in (2025, 2026):
+        for y in (2024, 2025, 2026):
             for d in sc.fixed_closures(y):
                 if min(obs) <= d <= max(obs):
                     self.assertIn(d, obs, f"{d} 은 고정 휴점인데 매출이 있다")

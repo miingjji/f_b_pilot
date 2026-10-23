@@ -74,7 +74,7 @@ def _ledger(raw, out, report, checks, notes, dropped):
     inflow = [c for c in df.columns if c.startswith("입고_")]
     outflow = [c for c in df.columns if c.startswith("출고_")]
     calc = df["기초재고"] + df[inflow].sum(axis=1) - df[outflow].sum(axis=1)
-    checks.append(make_check("수불마감: 기초+입고−출고=기말 (불일치 행 수)", 0, int(((calc - df["기말재고"]).abs() > TOL).sum())))
+    checks.append(make_check("수불마감: 기초+입고−출고=기말 (불일치 행 수)", 0, int(((calc - df["기말재고"]).abs() > TOL).sum()), note=True))   # 2024-09 원재료 81,000원: 원본 시트 값
     total = df["계정명"].map(label) == "합계"
     if total.any():
         diff = (df[~total][num].sum() - df[total].iloc[0][num]).abs() > TOL
@@ -124,7 +124,7 @@ def _loss(raw, out, report, checks, notes, dropped):
     _finish(df, "로스요약")
     df[cols] = df[cols].astype(float)
     theory, actual, loss, rate = (df[c] for c in cols)
-    checks.append(make_check("로스요약: 로스금액 = 실사−이론 (불일치 행 수)", 0, int(((actual - theory - loss).abs() > TOL).sum())))
+    checks.append(make_check("로스요약: 로스금액 = 실사−이론 (불일치 행 수)", 0, int(((actual - theory - loss).abs() > TOL).sum()), note=True))   # 2024-03~12 원재료 소액~154,261원(04·12월 큼): 원본 시트 값
     ok_rows = actual != 0
     checks.append(make_check("로스요약: 로스율 = 로스금액 ÷ 실사기준사용 (불일치 행 수)", 0,
                              int(((loss[ok_rows] / actual[ok_rows] - rate[ok_rows]).abs() > 1e-6).sum())))

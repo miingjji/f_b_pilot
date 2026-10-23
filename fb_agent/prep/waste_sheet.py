@@ -104,8 +104,8 @@ def clean_waste(raw: pd.DataFrame, month: str | None = None):
     dropped.append(f"품목별 표의 폐기량 0인 행 {int(zero.sum())}개")
     summ = summ[~zero].drop(columns="사유").reset_index(drop=True)
     total = raw.iloc[end]
-    checks.append(_check("품목별 수량 합계 = '합 계' 행", pd.to_numeric(total.iloc[7]), summ["수량"].sum(), abs_tol=1e-4))
-    checks.append(_check("품목별 중량 합계 = '합 계' 행", pd.to_numeric(total.iloc[8]), summ["중량_g"].sum(), abs_tol=1e-3))
+    checks.append(_check("품목별 수량 합계 = '합 계' 행 (원본 값 차이)", pd.to_numeric(total.iloc[7]), summ["수량"].sum(), abs_tol=1e-4, note=True))   # 2024-11: 원본 합계 행이 품목 합과 다름
+    checks.append(_check("품목별 중량 합계 = '합 계' 행 (원본 값 차이)", pd.to_numeric(total.iloc[8]), summ["중량_g"].sum(), abs_tol=1e-3, note=True))
     fill(summ, "분해원천", NONE_TEXT, summ["분해원천"].isna(), "분해 원천 없음(직접 폐기)", report)
     fill(summ, "거래처명", NONE_TEXT, summ["거래처명"].isna(), "거래처 없음", report)
     ensure_no_missing(summ)
@@ -150,6 +150,7 @@ def clean_waste(raw: pd.DataFrame, month: str | None = None):
          "수량 × 환산단위로 계산", report, shown="수량×환산단위")
     # RMS 품목이 아닌 행(밥 등)은 무게만 적는다: 수량 0, 환산단위 0(해당 없음)
     fill(rec, "수량", 0.0, ~rms & rec["수량"].isna(), "RMS 품목이 아니라 중량만 기록", report)
+    fill(rec, "중량_g", 0.0, ~rms & rec["수량"].eq(0) & rec["중량_g"].isna(), "RMS 품목이 아니고 중량도 비어 있음(2024-08-20 밥) → 기록 누락, 0 처리", report)
     fill(rec, "환산단위", 0.0, ~rms & rec["환산단위"].isna(), "RMS 품목이 아니라 환산단위 없음(0)", report)
     for col in ("거래처명", "품명", "규격"):                                 # 비어 있으면 품목별 표의 같은 코드 값
         fill(rec, col, rec["품목코드"].map(master[col]), rms & rec[col].isna() & rec["품목코드"].map(master[col]).notna(), "품목별 표의 같은 코드 값", report, shown="품목별 표 값")
