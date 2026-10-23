@@ -5,7 +5,8 @@
 
 정리된 업체·품목 표(prep.organize)를 앱의 마스터 형식으로 바꾼다. 실제 근거가 없는 값은 만들지 않고 비워 두며(앱에서는 '데이터 없음'), 출처 열을 남긴다.
 
-  일 소비량   ① 표준사용량(g) 시트의 재료별 합계 ÷ 그 달 일수  ② 이번 달 입고량 ÷ 그 달 일수 (입고 기반 추정)  ③ 근거가 없으면 비움
+  일 소비량   ① 월별 수불부 최근 12개월 실적: (12개월 입고 + 기초 실사재고 − 기말 실사재고) ÷ 일수
+              ② 표준사용량(g) 시트의 재료별 합계 ÷ 그 달 일수  ③ 이번 달 입고량 ÷ 그 달 일수 (입고 기반 추정)  ④ 12개월 동안 입고가 한 번도 없으면 소비 0 (`최근 12개월 입고 없음`)
   현재 재고   실사재고. 쓰는 소모품이 실사에서 0으로만 잡혀 있으면(세지 않은 것) 비움
   안전 재고   일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) — 정책 값. 소비량이나 리드타임이 없으면 비움
   발주 요일   구매청구 기록(2024~2026)에서 청구가 가장 많은 요일 (청구 10건 이상인 업체만). 없으면 비움
@@ -28,6 +29,7 @@ SHEET_STD = "표준사용량(g)"
 DAYS = 31                                    # 월 일수 기본값 (2025년 12월). 파일 이름이 YYYY-MM 이면 그 달 일수를 쓴다
 WEEKDAYS = "월화수목금토"
 NO_DATA = "데이터 없음"
+NO_RECENT_RECEIPT = "최근 12개월 입고 없음"
 MEASURED = "구매청구 실측"
 MEASURED_GRADES = ("높음", "보통")           # 청구 10건 이상인 업체만 실측 값으로 쓴다
 
@@ -36,6 +38,45 @@ MEASURED_GRADES = ("높음", "보통")           # 청구 10건 이상인 업체
 def safety_days(lead: int) -> int:
     """안전재고 일수: 리드타임의 절반(올림), 최소 1일."""
     return max(1, math.ceil(lead / 2))
+
+
+USAGE_MONTHS = 12                            # 일 소비량을 구하는 최근 월 수
+
+
+def ledger_usage(ledger: Path | None = None, months: int = USAGE_MONTHS) -> dict:
+    """월별 수불부 정제본에서 품목별 최근 months 개월 실적 소비량 {RMS 코드: (일 소비 수량, 일 소비 중량(g), 입고한 달 수)}.
+
+    소비 = 기간 입고 + 기초 실사재고(직전 달 말) − 기말 실사재고(마지막 달 말). 재고가 늘어 음수가 되면 입고량만 쓴다. 입고가 없으면 넣지 않는다."""
+    ledger = ledger or Path(__file__).resolve().parent.parent / "data" / "cleaned" / "수불부"
+    dirs = sorted(p for p in ledger.glob("20??/20??-??") if (p / "입고내역_정제.csv").exists())
+    if len(dirs) < months + 1:
+        return {}
+    start, window = dirs[-months - 1], dirs[-months:]
+    days = sum(calendar.monthrange(int(p.name[:4]), int(p.name[5:]))[1] for p in window)
+    recv_q, recv_g, n_months = {}, {}, {}
+    for p in window:
+        d = pd.read_csv(p / "입고내역_정제.csv", encoding="utf-8-sig", dtype={"품목코드_RMS": str}, usecols=["품목코드_RMS", "당월합계_수량", "당월합계_중량_g"])
+        d = d[d["품목코드_RMS"] != "없음"].groupby("품목코드_RMS").sum()
+        for code, r in d.iterrows():
+            recv_q[code] = recv_q.get(code, 0.0) + float(r["당월합계_수량"])
+            recv_g[code] = recv_g.get(code, 0.0) + float(r["당월합계_중량_g"])
+            n_months[code] = n_months.get(code, 0) + int(r["당월합계_수량"] > 0 or r["당월합계_중량_g"] > 0)
+
+    def stock(p: Path) -> pd.DataFrame:
+        t = pd.read_csv(p / "실사재고_정제.csv", encoding="utf-8-sig", dtype={"품목코드_RMS": str}, usecols=["품목코드_RMS", "재고실사_수량", "재고실사_중량_g"])
+        return t[t["품목코드_RMS"] != "없음"].groupby("품목코드_RMS").sum()
+
+    s0, s1 = stock(start), stock(window[-1])
+    out = {}
+    for code in recv_q:
+        if not n_months[code]:
+            continue
+        q0, g0 = (float(s0.at[code, "재고실사_수량"]), float(s0.at[code, "재고실사_중량_g"])) if code in s0.index else (0.0, 0.0)
+        q1, g1 = (float(s1.at[code, "재고실사_수량"]), float(s1.at[code, "재고실사_중량_g"])) if code in s1.index else (0.0, 0.0)
+        use_q, use_g = recv_q[code] + q0 - q1, recv_g[code] + g0 - g1
+        use_q, use_g = (use_q if use_q > 0 else recv_q[code]), (use_g if use_g > 0 else recv_g[code])
+        out[code] = (use_q / days, use_g / days, n_months[code])
+    return out
 
 
 def _supplier_key(name: str) -> set:
@@ -113,9 +154,10 @@ def _item_lead(r, sup: pd.DataFrame, measured: dict):
     return _supplier_lead(r["발주처"], sup, measured)
 
 
-def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS, measured: dict | None = None):
+def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS, measured: dict | None = None, usage_hist: dict | None = None):
     """(품목 표, 업체 표, 요약). 품목 표는 master.py 가 읽는 형식 + 출처 열. measured 는 measured_suppliers() 결과."""
     measured = measured or {}
+    usage_hist = usage_hist or {}
     std_map = dict(zip(std["코드"], std["이론사용_g"]))
     sup = suppliers.set_index("업체명")
     rows, n_nocode = [], 0
@@ -130,13 +172,17 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
         recv = float(r["당월입고수량"] if count_item else r["당월입고중량_g"])
         theory = float(std_map.get(r["품목코드_RMS"], 0.0))
 
-        if theory > 0:
+        hist = usage_hist.get(r["품목코드_RMS"])
+        if hist is not None:
+            usage, usage_src = hist[0] if count_item else hist[1], f"수불부 {USAGE_MONTHS}개월 실적"
+        elif theory > 0:
             usage, usage_src = theory / days, "표준사용량"
         elif recv > 0:
             usage, usage_src = recv / days, "입고 기반 추정"
-        else:
-            usage, usage_src = None, NO_DATA
-        usage = None if usage is None else round(usage, 4)
+        else:                                             # 12개월 동안 입고가 한 번도 없다: 소비가 관측되지 않았다 (데이터가 없는 것이 아니라 0)
+            usage, usage_src = 0.0, NO_RECENT_RECEIPT
+        usage = round(usage, 4)
+        months_used = hist[2] if hist is not None else 0
 
         stock_src = "실사재고"
         if r["품목구분"] == "소모품" and stock == 0 and usage:      # 쓰는 소모품이 실사에서 0으로만 잡혀 있으면 세지 않은 것: 재고를 모른다
@@ -146,11 +192,11 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
         s_lead, _s_src = _supplier_lead(r["발주처"], sup, measured)
         rows.append({
             "품목코드": code, "품목명": r["품명"], "대분류": r["품목구분"], "중분류": r["계정명"], "기본단위": unit,
-            "PK당수량": pk, "BOX당PK": 1.0, "EA당수량": ea, "일소비량": "" if usage is None else usage,
-            "안전재고량": "" if usage is None or lead is None else round(usage * safety_days(lead), 4),
+            "PK당수량": pk, "BOX당PK": 1.0, "EA당수량": ea, "일소비량": usage,
+            "안전재고량": "" if lead is None else round(usage * safety_days(lead), 4),
             "현재재고량": "" if stock is None else float(stock),
             "리드타임": "" if lead is None or lead == s_lead else lead, "거래처": r["발주처"],
-            "규격": r["규격"], "일소비량_출처": usage_src, "재고_출처": stock_src, "리드타임_출처": lead_src,
+            "규격": r["규격"], "일소비량_출처": usage_src, "일소비량_입고월수": months_used, "재고_출처": stock_src, "리드타임_출처": lead_src,
             "원거래처": r["원거래처"],
         })
     df = pd.DataFrame(rows)
@@ -171,11 +217,11 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
     return df, sdf, info
 
 
-def build_from_markdown(src):
+def build_from_markdown(src, ledger_history: bool = True):
     sheets = read_sheets(src)
     tables, _ = build_all(src, sheets=sheets)
     return build_app_master(tables["업체별_품목"], tables["업체_마스터"], read_standard_usage(sheets[SHEET_STD]), days_in_source(src),
-                            measured_suppliers())
+                            measured_suppliers(), ledger_usage() if ledger_history else None)
 
 
 README = """# 실제 데이터 기반 앱 마스터
@@ -187,9 +233,9 @@ README = """# 실제 데이터 기반 앱 마스터
 | 항목 | 실제 근거 | 근거가 없으면 |
 |---|---|---|
 | 품목·규격·업체·재고(식재료) | 정리된 실사재고·입고내역 | |
-| 일 소비량 | `표준사용량` (표준사용량(g) 시트 합계 ÷ 그 달 일수), `입고 기반 추정`(입고량 ÷ 그 달 일수) | 비움 (`데이터 없음`) |
+| 일 소비량 | `수불부 12개월 실적`(12개월 입고 + 기초 실사재고 − 기말 실사재고) ÷ 일수, 없으면 `표준사용량`, 그다음 `입고 기반 추정` | 12개월 동안 입고가 없으면 소비 0 (`최근 12개월 입고 없음`) |
 | 현재 재고 | `실사재고` | 쓰는 소모품이 실사에서 0으로만 잡혀 세지 않은 것이면 비움 |
-| 안전 재고 | 정책 값: 일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) | 소비량·리드타임이 없으면 비움 |
+| 안전 재고 | 정책 값: 일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) | 리드타임이 없으면 비움 |
 | 리드타임 | 품명 태그(수불부), `구매청구 실측`(2024~2026 청구→입고 일수 90분위, 청구 10건 이상 업체) | 비움 |
 | 발주 요일 | `구매청구 실측`(청구가 가장 많은 요일, 청구 10건 이상 업체) | 비움 |
 

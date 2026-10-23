@@ -6,7 +6,8 @@ from pathlib import Path
 import pandas as pd
 
 from master import load_master
-from prep.app_master import (MEASURED, NO_DATA, build_app_master, match_measured, read_standard_usage, safety_days, write_master)
+from prep.app_master import (MEASURED, NO_DATA, NO_RECENT_RECEIPT, build_app_master, ledger_usage, match_measured, read_standard_usage,
+                             safety_days, write_master)
 
 NA = pd.NA
 ORG_COLS = ["발주처", "원거래처", "품목구분", "계정명", "품목코드_RMS", "품목코드_CK", "품목코드_매장", "품명", "규격", "환산단위", "당월입고수량",
@@ -62,14 +63,20 @@ class AppMaster(unittest.TestCase):
         s = self.items[self.items["품목코드"] == "S1"].iloc[0]
         self.assertEqual((s["기본단위"], s["PK당수량"], s["EA당수량"]), ("개", 1, 1))
 
-    def test_usage_from_standard_usage_then_receipts_else_blank(self):
+    def test_usage_from_ledger_then_standard_usage_then_receipts_else_zero(self):
         by = self.items.set_index("품목코드")
         self.assertEqual((by.loc["F1", "일소비량"], by.loc["F1", "일소비량_출처"]), (1000.0, "표준사용량"))      # 31000g / 31일
         self.assertEqual((by.loc["F2", "일소비량"], by.loc["F2", "일소비량_출처"]), (1000.0, "입고 기반 추정"))   # 31000g / 31일
         self.assertEqual((by.loc["S1", "일소비량"], by.loc["S1", "일소비량_출처"]), (2.0, "입고 기반 추정"))      # 62개 / 31일
-        self.assertEqual((by.loc["S3", "일소비량"], by.loc["S3", "일소비량_출처"]), ("", NO_DATA))
-        self.assertEqual((by.loc["S2", "일소비량"], by.loc["S2", "일소비량_출처"]), ("", NO_DATA))               # 재고만 있어도 소비를 만들지 않는다
+        self.assertEqual((by.loc["S3", "일소비량"], by.loc["S3", "일소비량_출처"]), (0.0, NO_RECENT_RECEIPT))     # 관측된 소비가 없다 (모르는 것이 아니라 0)
+        self.assertEqual((by.loc["S2", "일소비량"], by.loc["S2", "일소비량_출처"]), (0.0, NO_RECENT_RECEIPT))   # 재고만 있어도 소비를 만들지 않는다
         self.assertEqual(by.loc["F3", "일소비량_출처"], "입고 기반 추정")                                       # 이론사용 0이면 입고로
+
+    def test_ledger_usage_beats_standard_usage_and_counts_months(self):
+        items, _, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist={"F1": (50.0, 50000.0, 7), "S2": (3.0, 3.0, 1)})
+        by = items.set_index("품목코드")
+        self.assertEqual((by.loc["F1", "일소비량"], by.loc["F1", "일소비량_출처"], by.loc["F1", "일소비량_입고월수"]), (50000.0, "수불부 12개월 실적", 7))
+        self.assertEqual((by.loc["S2", "일소비량"], by.loc["S2", "일소비량_출처"]), (3.0, "수불부 12개월 실적"))     # 개수 품목은 수량 기준
 
     def test_stock_is_real_and_unknown_for_uncounted_supplies(self):
         by = self.items.set_index("품목코드")
@@ -84,7 +91,7 @@ class AppMaster(unittest.TestCase):
         self.assertEqual(by.loc["F1", "안전재고량"], 1000.0 * 2)             # 실측 D3 -> 2일치
         self.assertEqual(by.loc["F3", "안전재고량"], 15500.0 / 31 * 1)       # 태그 D1 -> 1일치
         self.assertEqual(by.loc["S1", "안전재고량"], "")                    # 바이맥스는 리드타임을 모른다
-        self.assertEqual(by.loc["S3", "안전재고량"], "")
+        self.assertEqual(by.loc["F4", "안전재고량"], 0.0)                   # 소비가 관측되지 않은 품목은 0
 
     def test_names_and_codes_are_unique_and_valid(self):
         self.assertEqual(self.items["품목명"].is_unique, True)
@@ -128,13 +135,38 @@ class AppMaster(unittest.TestCase):
         nap = items[self.items[self.items["품목코드"] == "S1"].iloc[0]["품목명"]]
         self.assertEqual((nap.base_unit, nap.ea_weight_g, nap.lead_time_days, nap.usage_known, nap.current_stock), ("개", 1, None, True, None))
         straw = items[self.items[self.items["품목코드"] == "S3"].iloc[0]["품목명"]]
-        self.assertFalse(straw.usage_known)
+        self.assertEqual((straw.usage_known, straw.daily_usage_g), (True, 0.0))
         self.assertEqual((suppliers["바이맥스"].lead_time_days, suppliers["바이맥스"].order_days_label, suppliers["바이맥스"].has_schedule), (None, "데이터 없음", False))
 
-    def test_only_unknown_values_are_blank(self):
-        blank = set(self.items.loc[self.items["일소비량"] == "", "품목코드"])
-        self.assertEqual(blank, {"S2", "S3", "NC-001", "F4"})                              # 표준사용량도 입고도 없는 품목
+    def test_usage_is_never_blank(self):
+        self.assertTrue((self.items["일소비량"] != "").all())
         self.assertEqual(int(self.sup.isna().sum().sum()), 0)
+
+
+class LedgerUsage(unittest.TestCase):
+    def month(self, root, ym, recv, stock):
+        d = root / ym[:4] / ym
+        d.mkdir(parents=True)
+        pd.DataFrame([{"품목코드_RMS": c, "당월합계_수량": q, "당월합계_중량_g": q * 1000} for c, q in recv.items()]).to_csv(d / "입고내역_정제.csv", index=False, encoding="utf-8-sig")
+        pd.DataFrame([{"품목코드_RMS": c, "재고실사_수량": q, "재고실사_중량_g": q * 1000} for c, q in stock.items()]).to_csv(d / "실사재고_정제.csv", index=False, encoding="utf-8-sig")
+
+    def test_consumption_is_receipts_plus_stock_decrease(self):
+        root = Path(tempfile.mkdtemp())
+        self.month(root, "2025-12", {"A": 0, "B": 0, "C": 0}, {"A": 10, "B": 2, "C": 0})          # 기초 실사 (직전 달 말)
+        self.month(root, "2026-01", {"A": 20, "B": 0, "C": 5}, {"A": 8, "B": 2, "C": 5})
+        self.month(root, "2026-02", {"A": 10, "B": 0, "C": 0}, {"A": 6, "B": 2, "C": 5})
+        use = ledger_usage(root, months=2)
+        days = 31 + 28
+        self.assertAlmostEqual(use["A"][0], (30 + 10 - 6) / days)                                 # 입고 30 + 기초 10 − 기말 6
+        self.assertAlmostEqual(use["A"][1], (30 + 10 - 6) * 1000 / days)
+        self.assertEqual(use["A"][2], 2)                                                           # 입고한 달 수
+        self.assertNotIn("B", use)                                                                 # 입고가 없으면 소비를 만들지 않는다
+        self.assertAlmostEqual(use["C"][0], 5 / days)                                              # 재고가 늘어 음수면 입고량만
+
+    def test_too_few_months_gives_nothing(self):
+        root = Path(tempfile.mkdtemp())
+        self.month(root, "2026-01", {"A": 1}, {"A": 1})
+        self.assertEqual(ledger_usage(root, months=12), {})
 
 
 class StandardUsage(unittest.TestCase):
@@ -166,7 +198,7 @@ class RealFile(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from prep.app_master import build_from_markdown
-        cls.items, cls.sup, cls.info = build_from_markdown(REAL)
+        cls.items, cls.sup, cls.info = build_from_markdown(REAL, ledger_history=False)          # 2025-12 한 달 파일 기준 (표준사용량 148개)
 
     def test_counts_and_sources(self):
         self.assertEqual(len(self.items), 903)
@@ -182,9 +214,8 @@ class RealFile(unittest.TestCase):
         self.assertEqual((len(items), len(suppliers)), (903, 45))
         active = [i for i in items.values() if i.usage_known and i.daily_usage_g > 0]
         src = self.info["일소비량_출처"]
-        self.assertEqual(len(active), src["표준사용량"] + src["입고 기반 추정"])
-        self.assertEqual(sum(not i.usage_known for i in items.values()), src[NO_DATA])      # 근거 없는 품목은 '데이터 없음'
-        self.assertEqual(src["표준사용량"], 148)
+        self.assertEqual(len(active), sum(n for k, n in src.items() if k != NO_RECENT_RECEIPT))
+        self.assertTrue(all(i.usage_known for i in items.values()))                          # 수불부가 있으면 소비는 항상 값이 있다(없으면 0)
         self.assertNotIn("가상", set(self.info["일소비량_출처"]) | set(self.info["재고_출처"]) | set(self.info["리드타임_출처"]))
 
     def test_real_stock_is_kept_for_food(self):
