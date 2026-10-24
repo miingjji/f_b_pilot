@@ -15,6 +15,7 @@ DATA_DIR = Path(__file__).resolve().parent / "data" / "real"      # 앱 마스�
 WEEKDAYS = "월화수목금토일"
 
 SUPPLIER_COLUMNS = ["거래처명", "발주요일", "기본리드타임", "취급분야"]
+SUNDAY_DELIVERY = ("CK",)    # 일요일에 입고하는 업체: CK 뿐이다 (사용자 확인 2026-10-24, 수불부 입고 실적과 같다). 다른 업체는 일요일 입고가 없다
 ITEM_COLUMNS = ["품목코드", "품목명", "대분류", "중분류", "기본단위", "PK당수량", "BOX당PK", "EA당수량",
                 "일소비량", "안전재고량", "현재재고량", "리드타임", "거래처"]   # 선택 열: 업종
 CUISINES = ("공통", "한식", "중식", "일식", "양식", "카페")
@@ -65,7 +66,12 @@ def load_suppliers(path: Path = DATA_DIR / "suppliers.csv") -> dict[str, Supplie
                 raise InvalidInputError(f"{where}: 발주요일에 알 수 없는 글자 {ch!r} (월화수목금토일)")
             days.add(WEEKDAYS.index(ch))
         lead = None if row["기본리드타임"] == "" else _num(row, "기본리드타임", where, integer=True)      # 비어 있으면 실제 데이터 없음
-        out[name] = Supplier(name, frozenset(days), lead)
+        deliver = set()
+        for ch in row.get("입고요일", ""):                                                              # 선택 열: 없거나 비어 있으면 제한 없음
+            if ch not in WEEKDAYS:
+                raise InvalidInputError(f"{where}: 입고요일에 알 수 없는 글자 {ch!r} (월화수목금토일)")
+            deliver.add(WEEKDAYS.index(ch))
+        out[name] = Supplier(name, frozenset(days), lead, frozenset(deliver))
     return out
 
 

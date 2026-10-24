@@ -219,6 +219,16 @@ class Loader(unittest.TestCase):
         with self.assertRaises(InvalidInputError):
             load_suppliers(self.tmp / "suppliers.csv")
 
+    def test_delivery_weekdays_are_optional_and_validated(self):
+        write_csv(self.tmp / "suppliers.csv", ["거래처명", "발주요일", "기본리드타임", "취급분야", "입고요일"], [["갑", "월", 1, "", "화수"], ["을", "월", 1, "", ""]])
+        s = load_suppliers(self.tmp / "suppliers.csv")
+        self.assertEqual((s["갑"].delivery_weekdays, s["을"].delivery_weekdays), (frozenset({1, 2}), frozenset()))
+        write_csv(self.tmp / "suppliers.csv", ["거래처명", "발주요일", "기본리드타임", "취급분야"], [["갑", "월", 1, ""]])
+        self.assertEqual(load_suppliers(self.tmp / "suppliers.csv")["갑"].delivery_weekdays, frozenset())      # 열이 없으면 제한 없음
+        write_csv(self.tmp / "suppliers.csv", ["거래처명", "발주요일", "기본리드타임", "취급분야", "입고요일"], [["갑", "월", 1, "", "화X"]])
+        with self.assertRaises(InvalidInputError):
+            load_suppliers(self.tmp / "suppliers.csv")
+
     def test_cp949_file_is_readable(self):
         (self.tmp / "suppliers.csv").write_bytes("거래처명,발주요일,기본리드타임,취급분야\n갑,월,1,\n".encode("cp949"))
         self.assertIn("갑", load_suppliers(self.tmp / "suppliers.csv"))

@@ -9,7 +9,7 @@ from errors import InvalidInputError
 
 WED = date(2026, 10, 14)   # 수요일
 J = ITEMS["짜사이"]        # 1000g/PK, 10PK/BOX, 450g/일, A식자재(월수금, D+1)
-CAL = DEFAULT_CALENDAR     # 일요일 휴무
+CAL = StoreCalendar(closed_weekdays=frozenset({6}))     # 일요일 휴무 (달력 계산을 시험하는 용도; 실제 기본 달력은 일요일도 영업)
 
 
 class Conversion(unittest.TestCase):
@@ -43,6 +43,19 @@ class Schedule(unittest.TestCase):
         cal = StoreCalendar(closed_dates=frozenset({date(2026, 10, 16)}))
         self.assertFalse(is_order_day(J, date(2026, 10, 16), cal))  # 금 휴무: 발주 불가
         self.assertFalse(is_order_day(J, WED, StoreCalendar(closed_dates=frozenset({date(2026, 10, 15)}))))  # 입고일 휴무
+
+    def test_arrival_must_be_on_a_day_the_supplier_delivers(self):
+        sup = Supplier("S", frozenset(range(6)), 1, frozenset({1, 2, 3, 4, 5}))               # 월~토 발주, 화~토 입고 (월요일 배송 없음), D+1
+        it = Item("x", 1000, 100, sup)
+        open_cal = StoreCalendar()
+        self.assertFalse(is_order_day(it, date(2026, 10, 17), open_cal))                      # 토 발주 -> 일 입고: 배송 요일이 아님
+        self.assertTrue(is_order_day(it, date(2026, 10, 19), open_cal))                       # 월 발주 -> 화 입고
+        free = Item("y", 1000, 100, Supplier("F", frozenset(range(6)), 1))                    # 입고요일을 모르면 제한 없음
+        self.assertTrue(is_order_day(free, date(2026, 10, 17), open_cal))
+        self.assertFalse(is_order_day(free, date(2026, 10, 17), CAL))                         # 매장 휴무는 그대로 반영
+
+    def test_default_calendar_is_open_on_sundays(self):
+        self.assertTrue(DEFAULT_CALENDAR.is_open(date(2026, 10, 18)))                         # 일요일 (POS 일요일 매출 142일)
 
     def test_sunday_arrival_skipped(self):
         # C농산(월/목, D+3): 목 발주 -> 일 입고(휴무)라 불가

@@ -7,7 +7,7 @@ import pandas as pd
 
 from master import load_master
 from prep.app_master import (MEASURED, NO_DATA, NO_RECENT_RECEIPT, USER_SET, build_app_master, drop_unusable_suppliers, ledger_usage,
-                             match_measured, read_standard_usage, safety_days, user_schedules, write_master)
+                             match_measured, read_standard_usage, safety_days, user_schedules, write_master, delivery_weekdays, recent_receipt_codes, NO_RECENT_RECEIPT_3M)
 
 NA = pd.NA
 ORG_COLS = ["발주처", "원거래처", "품목구분", "계정명", "품목코드_RMS", "품목코드_CK", "품목코드_매장", "품명", "규격", "환산단위", "당월입고수량",
@@ -73,6 +73,28 @@ class UserSchedule(unittest.TestCase):
         self.assertEqual(list(kept_items["품목코드"]), ["B"])                      # 남는 업체의 품목만 남긴다
 
 
+class Delivery(unittest.TestCase):
+    def test_delivery_weekdays_come_from_daily_receipts_of_the_supplier(self):
+        root = Path(tempfile.mkdtemp())
+        d = root / "2026" / "2026-03"
+        d.mkdir(parents=True)
+        rows = []
+        for sup, days in (("구드래", range(2, 26)), ("CK", range(1, 31)), ("소량", range(2, 6))):         # 2026-03: 1일 일요일
+            r = {"거래처명": sup}
+            for i in range(1, 32):
+                r[f"{i}일_수량"] = 1.0 if i in days else 0.0
+            rows.append(r)
+        pd.DataFrame(rows).to_csv(d / "입고내역_정제.csv", index=False, encoding="utf-8-sig")
+        got = delivery_weekdays(root, months=12)
+        self.assertNotIn("소량", got)                                                                  # 입고일이 20일 미만이면 요일을 정하지 않는다
+        self.assertEqual(got["CK"], "월화수목금토일")
+        self.assertEqual(got["구드래"], "월화수목금토일")                                              # 2~25일이 모든 요일을 덮는다
+        rows2 = [{"거래처명": "외부", **{f"{i}일_수량": (1.0 if date_.weekday() != 6 else 0.0) for i, date_ in enumerate(
+            [__import__("datetime").date(2026, 3, k) for k in range(1, 32)], start=1)}}]
+        pd.DataFrame(rows2).to_csv(d / "입고내역_정제.csv", index=False, encoding="utf-8-sig")
+        self.assertEqual(delivery_weekdays(root, months=12)["외부"], "월화수목금토")                        # 일요일 입고가 없으면 일요일은 뺀다
+
+
 class Policy(unittest.TestCase):
     def test_safety_days_cover_the_demand_overshoot_during_the_lead_time(self):
         self.assertEqual([safety_days(n) for n in (1, 2, 3, 4, 5, 6, 7, 10)], [1, 1, 1, 1, 1, 1, 2, 2])   # 매출 예측 초과분 95분위: 0.45(L=1) … 1.09(L=7)일
@@ -131,6 +153,25 @@ class AppMaster(unittest.TestCase):
         self.assertEqual(by.loc["F4", "리드타임_출처"], "품명 태그")
         self.assertEqual((by.loc["F1", "리드타임"], by.loc["F1", "리드타임_출처"]), ("", MEASURED))   # 업체 실측(3)을 그대로 쓰니 품목 값은 비움
         self.assertEqual((by.loc["S1", "리드타임"], by.loc["S1", "리드타임_출처"]), ("", NO_DATA))
+
+    def test_unused_food_items_with_zero_stock_and_no_recent_receipts_have_no_usage(self):
+        usage_hist = {"F1": (50.0, 50000.0, 7), "F2": (3.0, 3000.0, 2), "S2": (3.0, 3.0, 1)}
+        items, _, info = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist=usage_hist, drop_unscheduled=False, recent={"F1", "S2"})
+        by = items.set_index("품목코드")
+        self.assertEqual((by.loc["F2", "일소비량"], by.loc["F2", "일소비량_출처"]), (0.0, NO_RECENT_RECEIPT_3M))   # 식재료, 재고 0, 최근 입고 없음
+        self.assertEqual(by.loc["F1", "일소비량_출처"], "수불부 12개월 실적")                                      # 재고가 있거나 최근 입고가 있으면 그대로
+        self.assertEqual(by.loc["S2", "일소비량_출처"], "수불부 12개월 실적")
+        none, _, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist=usage_hist, drop_unscheduled=False)
+        self.assertEqual(none.set_index("품목코드").loc["F2", "일소비량_출처"], "수불부 12개월 실적")               # recent 를 주지 않으면 판단하지 않는다
+
+    def test_suppliers_get_delivery_weekdays_and_only_ck_delivers_on_sunday(self):
+        _, sup, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, drop_unscheduled=False, delivery={"CK": "월화수목금토", "대풍농산": "월수금일"})
+        s = sup.set_index("거래처명")
+        self.assertEqual((s.loc["CK", "입고요일"], s.loc["CK", "입고요일_출처"]), ("월화수목금토일", "수불부 입고 실적"))      # CK 는 실적에 없어도 일요일 입고
+        self.assertEqual(s.loc["대풍농산", "입고요일"], "월수금")                                                          # 다른 업체는 실적에 일요일이 끼어 있어도 뺀다
+        self.assertEqual((s.loc["바이맥스", "입고요일"], s.loc["바이맥스", "입고요일_출처"]), ("월화수목금토", "사용자 지정(일요일 입고는 CK만)"))   # 실적이 없으면 월~토
+        _, none, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, drop_unscheduled=False)                       # 수불부 자료가 없으면 판단하지 않는다
+        self.assertEqual(set(none["입고요일"]), {""})
 
     def test_suppliers_table(self):
         s = self.sup.set_index("거래처명")
@@ -193,6 +234,14 @@ class LedgerUsage(unittest.TestCase):
         self.assertEqual(use["A"][2], 2)                                                           # 입고한 달 수
         self.assertNotIn("B", use)                                                                 # 입고가 없으면 소비를 만들지 않는다
         self.assertAlmostEqual(use["C"][0], 5 / days)                                              # 재고가 늘어 음수면 입고량만
+
+    def test_recent_receipt_codes_look_at_the_last_months_only(self):
+        root = Path(tempfile.mkdtemp())
+        self.month(root, "2026-01", {"A": 5, "B": 5}, {})
+        self.month(root, "2026-02", {"A": 0, "B": 0}, {})
+        self.month(root, "2026-03", {"A": 0, "B": 4}, {})
+        self.assertEqual(recent_receipt_codes(root, months=2), {"B"})                                 # 최근 2개월(2·3월): B 만
+        self.assertIsNone(recent_receipt_codes(root, months=4))                                       # 수불부가 모자라면 판단하지 않는다
 
     def test_too_few_months_gives_nothing(self):
         root = Path(tempfile.mkdtemp())
