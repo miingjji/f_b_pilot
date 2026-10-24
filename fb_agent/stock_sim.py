@@ -87,3 +87,22 @@ def sim_inbound(day: date, items_by_code: dict, root: Path | None = None) -> dic
         if q > 0:
             out[it.name] = q * it.pk_weight_g
     return out
+
+
+@lru_cache(maxsize=4)
+def _read_plan(path: str, mtime: float) -> pd.DataFrame:
+    t = pd.read_csv(path, dtype={"품목코드": str})
+    t["발주일"], t["입고예정일"] = pd.to_datetime(t["발주일"]).dt.date, pd.to_datetime(t["입고예정일"]).dt.date
+    return t
+
+
+def sim_order_plan(day: date, days: int = 14, root: Path | None = None) -> pd.DataFrame | None:
+    """day 부터 days 일 동안의 발주 예정(시뮬레이션 예측, `inventory_sim.py --orders`). 쓸 발주일 예측이 없으면 None.
+    day 이전에 출발한 가장 최근 예측을 쓴다."""
+    root = root or FORECAST_DIR
+    cand = [(o, d / "발주일_예측.csv") for o, d in _origins(root) if o < day and (d / "발주일_예측.csv").exists()]
+    if not cand:
+        return None
+    path = cand[-1][1]
+    t = _read_plan(str(path), path.stat().st_mtime)
+    return t[(t["발주일"] >= day) & (t["발주일"] < day + timedelta(days=days))].reset_index(drop=True)

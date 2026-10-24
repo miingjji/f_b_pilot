@@ -129,6 +129,48 @@ class Tables(unittest.TestCase):
         self.assertAlmostEqual(s["WAPE_수량"], 10 / 20)
 
 
+class Orders(unittest.TestCase):
+    """발주일 예측: 입고일에서 업체 발주 요일·리드타임·휴점을 거꾸로 맞춘다. 2026-04: 6·13·20·27일(월)이 휴점."""
+    LEADS = {w: 2 for w in range(7)}
+    closed = staticmethod(lambda d: d.weekday() == 0)
+
+    @staticmethod
+    def next_open(d):
+        while d.weekday() == 0:
+            d += timedelta(days=1)
+        return d
+
+    def day_for(self, arrival, weekdays, leads=None):
+        return sim.order_date_for(arrival, weekdays, leads or self.LEADS, self.closed, self.next_open)
+
+    def test_order_date_is_arrival_minus_lead_on_an_order_weekday(self):
+        self.assertEqual(self.day_for(date(2026, 4, 9), {1, 3}), date(2026, 4, 7))     # 목 입고 = 화 발주 + 2일
+        self.assertEqual(self.day_for(date(2026, 4, 11), {1, 3}), date(2026, 4, 9))    # 토 입고 = 목 발주 + 2일
+
+    def test_closed_days_push_the_arrival_so_an_earlier_order_day_is_used(self):
+        # 토(4/4) 발주는 월(4/6, 휴점)에 도착해야 하니 화(4/7)로 밀린다 → 4/7 입고는 토 발주(4/4)
+        self.assertEqual(self.day_for(date(2026, 4, 7), {5}), date(2026, 4, 4))
+        self.assertIsNone(self.day_for(date(2026, 4, 7), set()))                       # 발주 요일이 없으면 없다
+
+    def test_falls_back_to_the_latest_order_that_arrives_in_time(self):
+        self.assertEqual(self.day_for(date(2026, 4, 10), {1}), date(2026, 4, 7))       # 정확히 맞는 날은 없고 화(4/7) 발주(4/9 입고)가 가장 늦은 안전한 날
+
+    def test_orders_exclude_pipeline_receipts_and_items_without_purchase_history(self):
+        days = [date(2026, 4, d) for d in (1, 2, 3)]
+        rc = pd.DataFrame({"A": [4.0, 2.0, 0.0], "B": [1.0, 0.0, 0.0], "C": [5.0, 5.0, 0.0]}, index=days)
+        sched = pd.DataFrame({"key": ["A"], "date": [date(2026, 4, 1)], "qty": [4.0]})       # A 의 4/1 입고는 이미 발주한 것
+        fn = lambda k, a: a - timedelta(days=1)                                                # 발주일 = 입고 전날
+        t = sim.orders_from_receipts(rc, sched, {"A": 1.0, "B": 2.0}, date(2026, 3, 31), fn)  # C 는 구매청구 이력이 없어 제외
+        self.assertEqual([(r.품목코드, r.발주일, r.입고예정일, r.수량_발주단위) for r in t.itertuples()], [("A", date(2026, 4, 1), date(2026, 4, 2), 2.0)])   # B 의 4/1 입고는 3/31 발주라 출발 전
+
+    def test_orders_before_the_origin_day_are_dropped(self):
+        days = [date(2026, 4, d) for d in (1, 3)]
+        rc = pd.DataFrame({"A": [1.0, 2.0]}, index=days)
+        fn = lambda k, a: a - timedelta(days=2)                                                # 4/1 입고 → 3/30 발주(출발 전) 제외, 4/3 입고 → 4/1 발주
+        t = sim.orders_from_receipts(rc, None, {"A": 2.0}, date(2026, 3, 31), fn)
+        self.assertEqual([(r.발주일, r.입고예정일, r.수량_수불부, r.수량_발주단위) for r in t.itertuples()], [(date(2026, 4, 1), date(2026, 4, 3), 2.0, 4.0)])
+
+
 class Frozen(unittest.TestCase):
     def test_frozen_forecast_is_not_overwritten(self):
         out = Path(tempfile.mkdtemp())
@@ -149,6 +191,24 @@ class Frozen(unittest.TestCase):
         self.assertAlmostEqual(R.loc[("시뮬레이션 품목", "월 소비", "시뮬레이션"), "WAPE_수량"], 2 / 18)     # 실제 소비 = 10 + 22 − 14 = 18
         self.assertEqual(R.loc[("전체 품목", "월말 재고", "시뮬레이션"), "n"], 2)
         self.assertTrue((d / "검증_2026-04_품목별.csv").exists() and (d / "검증_2026-04_요약.csv").exists())
+
+    def test_verify_orders_matches_plan_to_actual_purchase_requests(self):
+        from types import SimpleNamespace
+        out = Path(tempfile.mkdtemp())
+        d = out / "2026-03_출발"
+        d.mkdir()
+        pd.DataFrame({"발주일": ["2026-04-07", "2026-04-14", "2026-04-21"], "품목코드": ["A", "A", "B"]}).to_csv(d / "발주일_예측.csv", index=False)
+        g = lambda days: pd.DataFrame({"청구일자": days})
+        book = SimpleNamespace(orders=pd.DataFrame({"청구일자": [date(2026, 4, 30)]}),
+                               by_item={("A", "a", ""): g([date(2026, 4, 7), date(2026, 4, 15), date(2026, 4, 30)]), ("B", "b", ""): g([date(2026, 4, 28)])})
+        R = sim.verify_orders("2026-04", out_dir=out, book=book).set_index("허용 오차(일)")
+        self.assertEqual((R.loc[0, "예측 발주"], R.loc[0, "실제 발주"]), (3, 4))
+        self.assertAlmostEqual(R.loc[0, "정밀도"], 1 / 3)       # 같은 날: 4/7 만 맞음
+        self.assertAlmostEqual(R.loc[1, "정밀도"], 2 / 3)       # ±1일: 4/14↔4/15 도 맞음
+        self.assertAlmostEqual(R.loc[1, "재현율"], 2 / 4)
+        short = SimpleNamespace(orders=pd.DataFrame({"청구일자": [date(2026, 4, 10)]}), by_item={})
+        with self.assertRaises(FileNotFoundError):
+            sim.verify_orders("2026-04", out_dir=out, book=short)                              # 구매청구가 그 달을 덮지 못하면 비교하지 않는다
 
     def test_verify_waits_for_the_month_to_exist(self):
         L = ledger({"A": [1, 1, 1, 1]}, {"A": [0, 0, 0, 0]})

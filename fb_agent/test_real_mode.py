@@ -105,6 +105,7 @@ out["engine"] = {
     "orders_rows": sum(len(d.value) for d in a1.dataframe),
     "sup_cards": len([b for b in a1.button if b.key and b.key.startswith("po_engine_req_")]),
     "kpis": [m.label for m in a1.metric],
+    "plan_expander": [any("앞으로 2주 발주 예정" in x.label for x in at.expander) for at in (a1, a2)],
     "sim_caption": [any("시뮬레이션 재고를 참고로" in c.value for c in at.caption) for at in (a1, a2)],
     "warn_ok": len(a1.warning), "warn_stale": len(a2.warning), "sunday_success": len(a3.success),
     "download": [b.label for b in a1.get("download_button")] if hasattr(a1, "get") else [],
@@ -183,6 +184,7 @@ class RealMode(unittest.TestCase):
         self.assertGreaterEqual(r["orders_rows"], 10)                                  # 2026-10-01(목) 에는 실제 추천이 여러 건
         self.assertGreaterEqual(r["sup_cards"], 2)                                     # 거래처마다 카드와 '이 업체 청구' 버튼
         self.assertEqual(r["kpis"], ["발주 추천", "거래처", "시즌 시작 예상", "재고 확인 필요"])
+        self.assertEqual(r["plan_expander"], [True, True])                              # 발주일 예측(시뮬레이션)이 있는 날짜에는 '앞으로 2주 발주 예정'
         self.assertEqual(r["sim_caption"], [False, True])                                # 10-01 은 실사 후 14일 안(실사 추정), 10-21 은 시뮬레이션 재고를 참고로
         self.assertEqual(r["warn_ok"], 0)                                              # 자료 끝 3일 안이면 경고 없음
         self.assertEqual(r["warn_stale"], 1)                                           # 자료가 끝난 뒤(10-21)에는 경고

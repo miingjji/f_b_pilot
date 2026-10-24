@@ -85,5 +85,17 @@ class SimInbound(unittest.TestCase):
         self.assertEqual(stock_sim.sim_inbound(date(2026, 10, 2), items, self.root), {})
 
 
+class OrderPlan(unittest.TestCase):
+    def test_plan_window_and_origin(self):
+        root = make_forecast()
+        pd.DataFrame({"발주일": ["2026-10-02", "2026-10-10", "2026-10-30"], "입고예정일": ["2026-10-04", "2026-10-12", "2026-11-01"],
+                      "품목코드": ["C", "C", "C"], "수량_발주단위": [3.0, 3.0, 3.0]}).to_csv(root / "2026-09_출발" / "발주일_예측.csv", index=False)
+        t = stock_sim.sim_order_plan(date(2026, 10, 1), 14, root)
+        self.assertEqual(list(t["발주일"]), [date(2026, 10, 2), date(2026, 10, 10)])          # 14일 창 [10-01, 10-15)
+        self.assertEqual(len(stock_sim.sim_order_plan(date(2026, 10, 11), 30, root)), 1)
+        self.assertIsNone(stock_sim.sim_order_plan(date(2026, 9, 30), 14, root))               # 출발일 이후여야 쓴다
+        self.assertIsNone(stock_sim.sim_order_plan(date(2026, 10, 1), 14, Path(tempfile.mkdtemp())))
+
+
 if __name__ == "__main__":
     unittest.main()

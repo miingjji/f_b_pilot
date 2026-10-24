@@ -119,6 +119,7 @@ class Params:
     k_level: int = 12        # 평소 재고 수준을 보는 최근 개월 수 (길게 봐야 입고 주기 한 바퀴가 다 들어간다)
     level: str = "median"    # 평소 재고 수준: 월말 실사의 중앙값 | 평균
     day_share: float = 0.1   # 이 비율 이상의 입고가 있었던 요일을 입고 요일로 본다 (너무 좁히면 입고가 막혀 재고가 줄어든다)
+    round_at: float = 0.5    # lumps="round" 에서 평소 입고 단위의 이만큼 모자라면 한 단위를 들여온다 (0.5 = 반올림)
     lumps: str = "cont"      # 입고 크기: cont(평소 수준까지 필요한 만큼) | round(평소 입고 단위의 배수로 반올림) | min1(부족하면 최소 1단위, 과잉 입고라 쓰지 않음)
 
 
@@ -185,7 +186,7 @@ class Result:
     sim_keys: list           # 시뮬레이션한 품목 (나머지는 출발 재고 그대로)
 
 
-def simulate(f: pd.DataFrame, plan: SalesPlan, origin_day: date, end: date, lumps: str = "round", scheduled: pd.DataFrame | None = None) -> Result:
+def simulate(f: pd.DataFrame, plan: SalesPlan, origin_day: date, end: date, lumps: str = "round", scheduled: pd.DataFrame | None = None, round_at: float = 0.5) -> Result:
     """origin_day(월말 실사일) 다음 날부터 end 까지 하루씩. 입고 요일에 재고가 평소 수준보다 모자라면 평소 입고 단위의 배수로 채운다 (순환)."""
     act = f[(f["rate"] > 0) & f["Q"].notna() & f["start"].notna()]
     keys = list(act.index)
@@ -227,7 +228,7 @@ def simulate(f: pd.DataFrame, plan: SalesPlan, origin_day: date, end: date, lump
             elif lumps == "min1":
                 amt = np.where(proj < np.maximum(level - Q / 2, 0.0), np.maximum(1.0, np.round(short / Q)) * Q, 0.0)
             else:
-                amt = np.round(short / Q) * Q
+                amt = np.floor(short / Q + (1.0 - round_at)) * Q
             r_in = np.where(W[:, d.weekday()], amt, 0.0)
         S = np.maximum(S + r_in, 0.0)
         r = r + r_in
@@ -243,7 +244,7 @@ def run_origin(L: Ledger, origin: str, months: int, p: Params, hist: pd.Series |
     plan = SalesPlan(month_end(origin), hist)
     f = fit_items(L, origin, plan, p)
     sched = pipeline(book, po_factors(L, book, origin), month_end(origin)) if book is not None else None
-    return f, simulate(f, plan, month_end(origin), month_end(add_month(origin, months)), p.lumps, sched), plan
+    return f, simulate(f, plan, month_end(origin), month_end(add_month(origin, months)), p.lumps, sched, p.round_at), plan
 
 
 def month_table(f: pd.DataFrame, res: Result, origin: str, months: int) -> pd.DataFrame:
@@ -367,6 +368,101 @@ def verify(month: str, origin: str | None = None, out_dir: Path | None = None, L
     return R
 
 
+# ── 발주일 예측: 예상 입고에서 거꾸로 ─────────────────────
+def order_date_for(arrival: date, weekdays: set, leads: dict, is_closed, next_open) -> date | None:
+    """입고일에 들어오게 하려면 언제 발주해야 하나. 업체 발주 요일이고 영업일이며, 요일별 리드타임을 더한 입고일(영업일로 밀림)이 입고일과 같은 가장 늦은 날.
+    그런 날이 없으면 입고일 안에 들어오는 가장 늦은 발주일. 2주 안에 없으면 None."""
+    d, best = arrival - timedelta(days=1), None
+    for _ in range(14):
+        if d.weekday() in weekdays and not is_closed(d):
+            arr = next_open(d + timedelta(days=leads[d.weekday()]))
+            if arr == arrival:
+                return d
+            if arr < arrival:
+                return best or d
+        d -= timedelta(days=1)
+    return best
+
+
+def orders_from_receipts(receipts: pd.DataFrame, scheduled: pd.DataFrame | None, factors: dict, origin_day: date, order_day_fn) -> pd.DataFrame:
+    """일별 예상 입고(수불부 단위) → 발주 목록. 이미 발주한 입고(scheduled)는 빼고, 출발일 이후에 발주해야 하는 것만 남긴다.
+    order_day_fn(품목 키, 입고일) → 발주일 또는 None. 열: 품목코드, 발주일, 입고예정일, 수량_수불부, 수량_발주단위."""
+    r = receipts.copy()
+    for k, d, q in (zip(scheduled["key"], scheduled["date"], scheduled["qty"]) if scheduled is not None and len(scheduled) else []):
+        if k in r.columns and d in r.index:
+            r.loc[d, k] = max(0.0, r.loc[d, k] - q)
+    rows = []
+    for k in r.columns:
+        if k not in factors:
+            continue
+        for d, q in r[k].items():
+            if q > 1e-9:
+                od = order_day_fn(k, d)
+                if od is not None and od > origin_day:
+                    rows.append({"품목코드": k, "발주일": od, "입고예정일": d, "수량_수불부": float(q), "수량_발주단위": float(q) * factors[k]})
+    return pd.DataFrame(rows, columns=["품목코드", "발주일", "입고예정일", "수량_수불부", "수량_발주단위"])
+
+
+def order_plan(origin: str | None = None, months: int = 3, out_dir: Path | None = None, force: bool = False) -> Path:
+    """동결한 예측과 같은 출발·같은 자료로, 입고를 평소 입고 단위의 덩어리로 들여오는 시뮬레이션(lumps=round)을 돌려 발주일을 만든다
+    (연속 입고는 날마다 조금씩 들어와 실제 발주보다 훨씬 잦다). 구매청구 이력이 있는 품목만(발주 요일·리드타임·단위를 알 수 있다).
+    data/forecast/<origin>_출발/발주일_예측.csv 에 쓰고, 이미 있으면 거부한다(동결)."""
+    import reorder_engine as re
+    import store_calendar as sc
+    L = load_ledger(upto=origin)
+    origin = origin or L.months[-1]
+    out = (out_dir or FORECAST_DIR) / f"{origin}_출발"
+    target = out / "발주일_예측.csv"
+    if target.exists() and not force:
+        raise FileExistsError(f"{target} 가 이미 있습니다 (동결). 덮어쓰려면 force=True.")
+    book = re.load_book()
+    e = re.Engine(book=book, model=None, counts={})
+    f, res, _ = run_origin(L, origin, months, Params(lumps="round"), None, book)
+    od = month_end(origin)
+    fac = po_factors(L, book, origin)
+    sched = pipeline(book, fac, od)
+    sup = {k[0]: g["거래처"].iloc[-1] for k, g in book.by_item.items()}
+    unit = {k[0]: g["발주단위"].iloc[-1] for k, g in book.by_item.items()}
+
+    def day_fn(key, arrival):
+        sch = e.schedule(sup[key], arrival - timedelta(days=1)) if key in sup else None
+        if sch is None:
+            return None
+        return order_date_for(arrival, sch[0], sch[1], sc.is_closed, e.next_open)
+
+    t = orders_from_receipts(res.receipts, sched, fac, od, day_fn)
+    t["거래처"], t["발주단위"] = t["품목코드"].map(sup), t["품목코드"].map(unit)
+    t = t.join(L.meta[["품명", "규격"]], on="품목코드").sort_values(["발주일", "거래처", "품명"])
+    out.mkdir(parents=True, exist_ok=True)
+    t[["발주일", "입고예정일", "품목코드", "품명", "규격", "거래처", "수량_발주단위", "발주단위", "수량_수불부"]].to_csv(target, index=False, encoding="utf-8-sig")
+    return target
+
+
+def verify_orders(month: str, origin: str | None = None, out_dir: Path | None = None, book=None, tol: int = 1) -> pd.DataFrame:
+    """동결한 발주일 예측과 그 달의 실제 구매청구를 견준다 (품목별 발주일이 같은 날 / ±tol 일 안에 맞았나). 구매청구 자료가 그 달을 덮어야 한다."""
+    import reorder_engine as re
+    origin = origin or add_month(month, -1)
+    d = (out_dir or FORECAST_DIR) / f"{origin}_출발" / "발주일_예측.csv"
+    if not d.exists():
+        raise FileNotFoundError(f"{d} 가 없습니다.")
+    book = book or re.load_book()
+    plan = pd.read_csv(d, dtype={"품목코드": str})
+    plan["발주일"] = pd.to_datetime(plan["발주일"]).dt.date
+    plan = plan[[f"{x:%Y-%m}" == month for x in plan["발주일"]]]
+    if book.orders["청구일자"].max() < month_end(month):
+        raise FileNotFoundError(f"구매청구 자료가 {book.orders['청구일자'].max()}까지라 {month} 전체를 비교할 수 없습니다.")
+    act = {(k[0], dd) for k, g in book.by_item.items() for dd in g["청구일자"] if f"{dd:%Y-%m}" == month and k[0] in set(plan["품목코드"])}
+    pred = set(zip(plan["품목코드"], plan["발주일"]))
+    near = lambda a, S, n: any(x[0] == a[0] and abs((a[1] - x[1]).days) <= n for x in S)
+    rows = []
+    for n in (0, tol):
+        p, r = sum(near(x, act, n) for x in pred) / max(1, len(pred)), sum(near(x, pred, n) for x in act) / max(1, len(act))
+        rows.append({"허용 오차(일)": n, "예측 발주": len(pred), "실제 발주": len(act), "정밀도": p, "재현율": r, "F1": 2 * p * r / max(1e-9, p + r)})
+    R = pd.DataFrame(rows)
+    R.to_csv(d.with_name(f"검증_{month}_발주일.csv"), index=False, encoding="utf-8-sig")
+    return R
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--backtest", action="store_true", help="과거 월말 실사에서 출발해 1~3개월 뒤를 예측하고 실제와 비교")
@@ -374,6 +470,8 @@ def main(argv=None) -> int:
     ap.add_argument("--months", type=int, default=3)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--verify", metavar="YYYY-MM", help="동결한 예측과 그 달 실제 수불부를 비교")
+    ap.add_argument("--orders", nargs="?", const="", metavar="출발월", help="동결한 예측과 같은 출발에서 발주일 예측을 만들어 저장")
+    ap.add_argument("--verify-orders", metavar="YYYY-MM", help="동결한 발주일 예측과 그 달 실제 구매청구를 비교")
     a = ap.parse_args(argv)
     pd.set_option("display.width", 200)
     if a.backtest:
@@ -389,6 +487,12 @@ def main(argv=None) -> int:
         return 0
     if a.verify:
         print(verify(a.verify).round(3).to_string(index=False))
+        return 0
+    if a.orders is not None:
+        print(f"저장: {order_plan(a.orders or None, a.months, force=a.force)}")
+        return 0
+    if a.verify_orders:
+        print(verify_orders(a.verify_orders).round(3).to_string(index=False))
         return 0
     ap.print_help()
     return 0
