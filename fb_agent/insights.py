@@ -42,6 +42,8 @@ def sim_stock_note(day: date) -> str:
     f = lambda d: f"{d.month}월 {d.day}일"
     s = (f"재고는 {f(info['origin'])} 월말 실사에서 {f(info['asof'])} 마감까지 소비·입고를 시뮬레이션한 추정값입니다"
          f"(품목별 오차 약 31%, 시뮬레이션 {info['items']}개 품목).")
+    if info.get("actual_until"):
+        s += f" 구매청구 이력이 있는 {info['actual_items']}개 품목은 {f(info['actual_until'])}까지 실제 입고를 반영했습니다."
     return s + (f" 예측이 {f(info['asof'])}에서 끝나 그 뒤 날짜는 같은 값을 씁니다." if info["clamped"] else "") + " 실사 값을 입력하면 그 값을 씁니다."
 
 
