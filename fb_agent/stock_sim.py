@@ -27,11 +27,11 @@ def _origins(root: Path) -> list[tuple[date, Path]]:
     return sorted(out)
 
 
-def sim_stock(day: date, items_by_code: dict, root: Path | None = None) -> tuple[dict, dict | None]:
-    """({품목명: day 아침의 예상 재고(기본단위)}, 정보). 쓸 수 있는 예측이 없으면 ({}, None).
+def sim_stock_raw(day: date, root: Path | None = None) -> tuple[dict, dict | None]:
+    """({품목코드: day 아침의 예상 재고(수불부 규격 수량)}, 정보). 쓸 수 있는 예측이 없으면 ({}, None).
 
     day 아침 재고 = 전날 말 재고. 전날이 출발일이면 출발일의 실사 재고. 예측이 끝난 뒤의 날짜는 마지막 날 값을 쓰고 정보에 clamped=True.
-    정보: origin(출발일), asof(재고 기준일 = 전날), clamped, items(값을 준 품목 수).
+    정보: origin(출발일), asof(재고 기준일 = 전날), clamped.
     """
     root = root or FORECAST_DIR
     cand = [(o, d) for o, d in _origins(root) if o < day and (d / "일별_예측.csv").exists()]
@@ -48,12 +48,20 @@ def sim_stock(day: date, items_by_code: dict, root: Path | None = None) -> tuple
         clamped = asof > last
         asof = min(asof, last)
         s = t[t["일자"] == asof.isoformat()].set_index("key")["예상재고"]
+    return {k: float(q) for k, q in s.items() if pd.notna(q)}, {"origin": origin, "asof": asof, "clamped": clamped}
+
+
+def sim_stock(day: date, items_by_code: dict, root: Path | None = None) -> tuple[dict, dict | None]:
+    """({품목명: day 아침의 예상 재고(기본단위)}, 정보). 쓸 수 있는 예측이 없으면 ({}, None). 정보에 값을 준 품목 수 items 가 더해진다."""
+    raw, info = sim_stock_raw(day, root)
+    if info is None:
+        return {}, None
     out = {}
-    for code, q in s.items():
+    for code, q in raw.items():
         it = items_by_code.get(code)
-        if it is not None and it.current_stock is not None and pd.notna(q):        # 마스터에서 재고를 모르는 품목(세지 않은 소모품)은 모르는 채로 둔다
-            out[it.name] = float(q) * it.pk_weight_g                                # 수불부 규격 수량 -> 기본단위 (개수 품목은 PK당수량 1, 중량 품목은 환산 g)
-    return out, {"origin": origin, "asof": asof, "clamped": clamped, "items": len(out)}
+        if it is not None and it.current_stock is not None:                        # 마스터에서 재고를 모르는 품목(세지 않은 소모품)은 모르는 채로 둔다
+            out[it.name] = q * it.pk_weight_g                                       # 수불부 규격 수량 -> 기본단위 (개수 품목은 PK당수량 1, 중량 품목은 환산 g)
+    return out, info | {"items": len(out)}
 
 
 def sim_inbound(day: date, items_by_code: dict, root: Path | None = None) -> dict:
