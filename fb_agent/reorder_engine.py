@@ -183,6 +183,7 @@ class Engine:
         self.model = TimingModel.load() if model is _AUTO else model
         self.beta_down, self.beta_up = beta_down, beta_up      # 수량 탄력성: 규모비<1 / >1 일 때 (평소 주문량 × 규모비^β)
         self.last = max(self.b.daily.index)                    # 매출 자료의 마지막 날 (이후 날짜는 실제가 아니라 예측으로 채운다)
+        self.data_end = max(self.last, self.b.orders["청구일자"].max())   # 매출·구매청구 자료 중 더 늦은 날 (구매청구가 매출 자료보다 늦게까지 있을 수 있다)
         self._fc, self._sched = {}, {}
 
     # ── 매출 ──────────────────────────────────────────────
@@ -313,7 +314,7 @@ class Engine:
         scale = f_cover / (gap * S_win / W)                                  # 규모비 = 앞으로의 예측 매출 ÷ 평소 매출
         q = base * (scale ** (self.beta_down if scale < 1 else self.beta_up))
         hi = max(q, base * (scale ** self.beta_up)) * 1.25
-        since = (min(D, self.last + timedelta(days=1)) - od[-1]).days      # 자료가 끝난 뒤 날짜는 '자료 마지막 날 다음 날' 기준 (모델이 본 적 없는 경과일로 외삽하지 않게)
+        since = (min(D, self.data_end + timedelta(days=1)) - od[-1]).days   # 자료가 끝난 뒤 날짜는 '자료 마지막 날 다음 날' 기준 (모델이 본 적 없는 경과일로 외삽하지 않게). 구매청구가 매출 자료보다 늦으면 구매청구 끝 기준
         feat = dict(gapratio=min(4.0, since / mg), over=float(since >= mg - 0.5), dow=float(np.mean([x.weekday() == D.weekday() for x in od])),
                     lg=float(np.log(mg)), ln=float(np.log(len(od))), since=float(min(30, since)), lscale=float(np.log(max(0.2, scale))))
         rate = float(win["수량"].sum()) / S_win
