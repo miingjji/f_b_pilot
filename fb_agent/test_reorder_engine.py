@@ -179,6 +179,24 @@ class StockFromCounts(unittest.TestCase):
         self.assertIn("재고가 넉넉할 수 있음", r["사유"])
 
 
+class OrdersBeyondSalesData(unittest.TestCase):
+    """구매청구가 일자별 매출 자료보다 늦게까지 있어도 '마지막 발주 후 경과일'이 음수가 되지 않는다."""
+
+    def test_days_since_last_order_uses_the_later_data_end(self):
+        orders = every(date(2025, 6, 2), date(2025, 12, 27), 2, 3)                                    # 주문은 12-27 까지
+        book = make_book({K: orders}, end=date(2025, 12, 20))                                         # 매출은 12-20 까지
+        hist = pd.Series(3_000_000.0, index=list(book.daily.index))
+        e = re_.Engine(book=book, hist=hist, model=None, counts={})
+        last = max(d for d, _ in orders)
+        self.assertEqual(e.data_end, last)
+        days = sorted(d for d, _ in orders)
+        prev, D = days[-2], days[-1]                                                                  # 마지막 주문일에 보는 추천: 직전 주문은 매출 자료(12-20) 이후다
+        r = e.recommend_item(K, D)
+        self.assertEqual(r["since"], (D - prev).days)                                                 # 예전에는 (매출 끝 다음 날 − 직전 주문일)이라 음수였다
+        far = e.recommend_item(K, date(2026, 1, 20))
+        self.assertEqual(far["since"], 1)                                                              # 자료가 끝난 뒤 멀리는 '끝 다음 날' 기준
+
+
 class StockFromSimulation(unittest.TestCase):
     """실사 후 14일이 지난 날짜에는 시뮬레이션 재고를 참고로만 쓴다: 표시와 '재고 넉넉' 주의에는 쓰고, 주문 간격이 긴 품목의 발주 판정은 바꾸지 않는다."""
 
