@@ -51,6 +51,27 @@ out["po_auto_buttons"] = [b.label for b in at.button if "전체 구매청구" in
 out["po_auto_cards"] = len([b for b in at.button if b.label == "구매청구 만들기"])
 
 
+# 3-1) 시뮬레이션 재고: 마지막 월말 실사(9/30) 이후 날짜에만 쓰고 안내한다
+SIM = '''
+import streamlit as st
+from datetime import date
+from state import init_state
+init_state()
+st.session_state.cfg_today = date({y}, {m}, {d})
+import views
+from menu import get_leaf
+views.render(get_leaf({leaf!r}))
+'''
+def render_at(leaf, y, m, d):
+    return AppTest.from_string(SIM.format(leaf=leaf, y=y, m=m, d=d), default_timeout=120).run()
+note = lambda at: [i.value for i in at.info if "시뮬레이션" in i.value]
+s_after, s_before, s_input = render_at("po-auto", 2026, 10, 24), render_at("po-auto", 2026, 9, 15), render_at("stock-input", 2026, 10, 24)
+out["sim"] = {"after": note(s_after), "before": note(s_before), "input": note(s_input),
+              "cols_after": sorted({c for d in s_after.dataframe for c in d.value.columns}),
+              "urgent_after": next((m.value for m in s_after.metric if m.label == "긴급"), None),
+              "urgent_before": next((m.value for m in s_before.metric if m.label == "긴급"), None),
+              "exc": [e.message[:200] for at in (s_after, s_before, s_input) for e in at.exception]}
+
 # 3-2) 발주 추천 (이력 기반): 자료가 있는 날 / 자료가 끝난 뒤 / 발주일이 아닌 날
 ENGINE = '''
 import streamlit as st
@@ -143,6 +164,17 @@ class RealMode(unittest.TestCase):
         self.assertLessEqual(self.r["po_auto_cards"], 8)
         self.assertEqual(len(self.r["po_auto_captions"]), 1)
         self.assertEqual(len(self.r["po_auto_buttons"]), 1)
+
+    def test_po_auto_uses_simulated_stock_after_the_last_count(self):
+        r = self.r["sim"]
+        self.assertEqual(r["exc"], [])
+        self.assertEqual(len(r["after"]), 1)
+        self.assertIn("9월 30일 월말 실사", r["after"][0])
+        self.assertIn("10월 23일 마감", r["after"][0])                                    # 10-24 아침 재고 = 10-23 마감 재고
+        self.assertIn("이미 오는 중인 입고", r["after"][0])                                  # 발주 판단에 더한 입고 예정을 안내
+        self.assertIn("오는 중 입고", r["cols_after"])
+        self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에도 같은 안내
+        self.assertEqual(r["before"], [])                                                 # 실사 전 날짜에는 안내 없음
 
     def test_po_engine_screen(self):
         r = self.r["engine"]

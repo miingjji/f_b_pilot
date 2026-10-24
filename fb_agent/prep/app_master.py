@@ -8,7 +8,7 @@
   일 소비량   ① 월별 수불부 최근 12개월 실적: (12개월 입고 + 기초 실사재고 − 기말 실사재고) ÷ 일수
               ② 표준사용량(g) 시트의 재료별 합계 ÷ 그 달 일수  ③ 이번 달 입고량 ÷ 그 달 일수 (입고 기반 추정)  ④ 12개월 동안 입고가 한 번도 없으면 소비 0 (`최근 12개월 입고 없음`)
   현재 재고   실사재고. 쓰는 소모품이 실사에서 0으로만 잡혀 있으면(세지 않은 것) 비움
-  안전 재고   일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) — 정책 값. 소비량이나 리드타임이 없으면 비움
+  안전 재고   일 소비량 × 안전 일수(리드타임 동안 매출이 예측보다 클 위험 95%를 덮는 일수, 1~2일) — 정책 값. 소비량이나 리드타임이 없으면 비움
   발주 요일   구매청구 기록(2024~2026)에서 청구가 가장 많은 요일 (청구 10건 이상인 업체만). 없으면 비움
   리드타임    품명 태그(수불부) → 구매청구 실측 권장 리드타임(청구→입고 일수의 90분위, 10건 이상인 업체) → 비움
 """
@@ -38,8 +38,10 @@ MEASURED_GRADES = ("높음", "보통")           # 청구 10건 이상인 업체
 
 # ---------------------------------------------------------------- 정책/가상 값
 def safety_days(lead: int) -> int:
-    """안전재고 일수: 리드타임의 절반(올림), 최소 1일."""
-    return max(1, math.ceil(lead / 2))
+    """안전재고 일수: 리드타임 동안의 매출이 예측보다 많을 위험 95%를 덮는 일수(올림, 최소 1일).
+    매출 예측(2025-07~2026-09, 예측일 이전 자료만)의 리드타임 L일 구간 초과분 95분위가 L=1 0.45일, 2 0.64, 3 0.73, 5 0.88, 7 1.09일이라 0.35 + 0.1×L 로 근사한다.
+    (예전 '리드타임의 절반'은 D+3 에 2일, D+5 에 3일로 필요 이상이었다.)"""
+    return max(1, math.ceil(round(0.35 + 0.1 * lead, 6)))
 
 
 USAGE_MONTHS = 12                            # 일 소비량을 구하는 최근 월 수
@@ -168,16 +170,14 @@ def _item_lead(r, sup: pd.DataFrame, measured: dict, user: dict | None = None):
 
 
 def drop_unusable_suppliers(items: pd.DataFrame, suppliers: pd.DataFrame):
-    """계산할 수 있는 값이 하나도 없는 업체(리드타임·발주 요일을 모르고, 품목에도 계산된 소비량이 없는 업체)와 그 품목을 뺀다.
+    """리드타임·발주 요일을 모르는 업체와 그 품목을 뺀다(계산된 소비량이 있어도 일정 없이는 발주 시점을 못 정한다).
     (items, suppliers, 삭제한 업체 목록) 을 돌려준다."""
-    has_schedule = (suppliers["기본리드타임"] != "") | (suppliers["발주요일"] != "")
-    computed = items[items["일소비량_출처"] != NO_RECENT_RECEIPT].groupby("거래처").size()
-    keep = has_schedule | suppliers["거래처명"].isin(computed.index)
+    keep = (suppliers["기본리드타임"] != "") | (suppliers["발주요일"] != "")
     dropped = sorted(suppliers.loc[~keep, "거래처명"])
     return (items[~items["거래처"].isin(dropped)].reset_index(drop=True), suppliers[keep].reset_index(drop=True), dropped)
 
 
-def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS, measured: dict | None = None, usage_hist: dict | None = None, user: dict | None = None):
+def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS, measured: dict | None = None, usage_hist: dict | None = None, user: dict | None = None, drop_unscheduled: bool = True):
     """(품목 표, 업체 표, 요약). 품목 표는 master.py 가 읽는 형식 + 출처 열. measured 는 measured_suppliers() 결과, user 는 user_schedules() 결과."""
     measured = measured or {}
     user = user or {}
@@ -236,7 +236,7 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
         s_rows.append({"거래처명": name, "발주요일": m[0] if has_days else "", "기본리드타임": "" if lead is None else lead, "취급분야": r["취급구분"],
                        "발주요일_출처": m[1] if has_days else NO_DATA, "리드타임_출처": lead_src})
     sdf = pd.DataFrame(s_rows)
-    df, sdf, dropped = drop_unusable_suppliers(df, sdf)
+    df, sdf, dropped = drop_unusable_suppliers(df, sdf) if drop_unscheduled else (df, sdf, [])
     info = {"items": len(df), "suppliers": len(sdf), "삭제된_업체": dropped,
             "일소비량_출처": df["일소비량_출처"].value_counts().to_dict(), "재고_출처": df["재고_출처"].value_counts().to_dict(),
             "리드타임_출처": df["리드타임_출처"].value_counts().to_dict()}
@@ -261,7 +261,7 @@ README = """# 실제 데이터 기반 앱 마스터
 | 품목·규격·업체·재고(식재료) | 정리된 실사재고·입고내역 | |
 | 일 소비량 | `수불부 12개월 실적`(12개월 입고 + 기초 실사재고 − 기말 실사재고) ÷ 일수, 없으면 `표준사용량`, 그다음 `입고 기반 추정` | 12개월 동안 입고가 없으면 소비 0 (`최근 12개월 입고 없음`) |
 | 현재 재고 | `실사재고` | 쓰는 소모품이 실사에서 0으로만 잡혀 세지 않은 것이면 비움 |
-| 안전 재고 | 정책 값: 일 소비량 × 안전 일수(리드타임의 절반, 올림, 최소 1일) | 리드타임이 없으면 비움 |
+| 안전 재고 | 정책 값: 일 소비량 × 안전 일수(리드타임 동안 매출이 예측보다 클 위험 95%를 덮는 일수, 1~2일) | 리드타임이 없으면 비움 |
 | 리드타임 | `사용자 지정`(`사용자지정_업체일정.csv`), 품명 태그(수불부), `구매청구 실측`(2024~2026 청구→입고 일수 90분위, 청구 10건 이상 업체) | 비움 |
 | 발주 요일 | `사용자 지정`, `구매청구 실측`(청구가 가장 많은 요일, 청구 10건 이상 업체) | 비움 (리드타임·발주 요일과 계산된 소비량이 모두 없는 업체는 품목과 함께 뺀다) |
 

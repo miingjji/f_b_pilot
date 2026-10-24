@@ -63,24 +63,24 @@ class UserSchedule(unittest.TestCase):
         by = items.set_index("품목코드")
         self.assertEqual((by.loc["S1", "리드타임"], by.loc["S1", "리드타임_출처"]), ("", USER_SET))   # 품목 리드타임은 업체 값을 따른다
 
-    def test_suppliers_with_nothing_computable_are_dropped_with_their_items(self):
+    def test_suppliers_without_schedule_are_dropped_with_their_items(self):
         items = pd.DataFrame({"품목코드": ["A", "B", "C", "D"], "거래처": ["x", "y", "z", "z"],
                               "일소비량_출처": [NO_RECENT_RECEIPT, NO_RECENT_RECEIPT, "수불부 12개월 실적", NO_RECENT_RECEIPT]})
         sup = pd.DataFrame({"거래처명": ["x", "y", "z", "w"], "기본리드타임": ["", 2, "", ""], "발주요일": ["", "월", "", ""]})
         kept_items, kept_sup, dropped = drop_unusable_suppliers(items, sup)
-        self.assertEqual(dropped, ["w", "x"])                                       # y 는 일정이 있고, z 는 계산된 소비량이 있어 남긴다
-        self.assertEqual(list(kept_sup["거래처명"]), ["y", "z"])
-        self.assertEqual(list(kept_items["품목코드"]), ["B", "C", "D"])             # 남는 업체의 품목은 모두 남긴다
+        self.assertEqual(dropped, ["w", "x", "z"])                                  # 일정이 있는 y 만 남긴다(z 는 소비량이 계산돼도 일정이 없다)
+        self.assertEqual(list(kept_sup["거래처명"]), ["y"])
+        self.assertEqual(list(kept_items["품목코드"]), ["B"])                      # 남는 업체의 품목만 남긴다
 
 
 class Policy(unittest.TestCase):
-    def test_safety_days_grow_with_lead_time(self):
-        self.assertEqual([safety_days(n) for n in (1, 2, 3, 4, 5)], [1, 1, 2, 2, 3])
+    def test_safety_days_cover_the_demand_overshoot_during_the_lead_time(self):
+        self.assertEqual([safety_days(n) for n in (1, 2, 3, 4, 5, 6, 7, 10)], [1, 1, 1, 1, 1, 1, 2, 2])   # 매출 예측 초과분 95분위: 0.45(L=1) … 1.09(L=7)일
 
 
 class AppMaster(unittest.TestCase):
     def setUp(self):
-        self.items, self.sup, self.info = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS)
+        self.items, self.sup, self.info = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, drop_unscheduled=False)
 
     def test_units_follow_conversion_factor(self):
         a = self.items[self.items["품목코드"] == "F1"].iloc[0]
@@ -98,7 +98,7 @@ class AppMaster(unittest.TestCase):
         self.assertEqual(by.loc["F3", "일소비량_출처"], "입고 기반 추정")                                       # 이론사용 0이면 입고로
 
     def test_ledger_usage_beats_standard_usage_and_counts_months(self):
-        items, _, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist={"F1": (50.0, 50000.0, 7), "S2": (3.0, 3.0, 1)})
+        items, _, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist={"F1": (50.0, 50000.0, 7), "S2": (3.0, 3.0, 1)}, drop_unscheduled=False)
         by = items.set_index("품목코드")
         self.assertEqual((by.loc["F1", "일소비량"], by.loc["F1", "일소비량_출처"], by.loc["F1", "일소비량_입고월수"]), (50000.0, "수불부 12개월 실적", 7))
         self.assertEqual((by.loc["S2", "일소비량"], by.loc["S2", "일소비량_출처"]), (3.0, "수불부 12개월 실적"))     # 개수 품목은 수량 기준
@@ -113,7 +113,7 @@ class AppMaster(unittest.TestCase):
 
     def test_safety_stock_needs_usage_and_lead_time(self):
         by = self.items.set_index("품목코드")
-        self.assertEqual(by.loc["F1", "안전재고량"], 1000.0 * 2)             # 실측 D3 -> 2일치
+        self.assertEqual(by.loc["F1", "안전재고량"], 1000.0 * 1)             # 실측 D3 -> 1일치
         self.assertEqual(by.loc["F3", "안전재고량"], 15500.0 / 31 * 1)       # 태그 D1 -> 1일치
         self.assertEqual(by.loc["S1", "안전재고량"], "")                    # 바이맥스는 리드타임을 모른다
         self.assertEqual(by.loc["F4", "안전재고량"], 0.0)                   # 소비가 관측되지 않은 품목은 0
@@ -139,6 +139,12 @@ class AppMaster(unittest.TestCase):
         self.assertEqual((s.loc["바이맥스", "기본리드타임"], s.loc["바이맥스", "발주요일"], s.loc["바이맥스", "발주요일_출처"]), ("", "", NO_DATA))
         self.assertEqual((s.loc["CK", "기본리드타임"], s.loc["CK", "리드타임_출처"], s.loc["CK", "발주요일"]), (1, "품명 태그 대표값", ""))
 
+    def test_unscheduled_supplier_is_dropped_by_default(self):
+        items, sup, info = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS)
+        self.assertEqual(set(sup["거래처명"]), {"대풍농산", "CK"})
+        self.assertEqual(info["삭제된_업체"], ["바이맥스"])
+        self.assertFalse(items["품목코드"].isin(["S1", "S2", "S3"]).any())
+
     def test_info_counts_sources(self):
         self.assertEqual(self.info["일소비량_출처"]["표준사용량"], 1)
         self.assertEqual(self.info["items"], len(ITEMS))
@@ -154,7 +160,7 @@ class AppMaster(unittest.TestCase):
         self.assertEqual(len(items), len(ITEMS))
         self.assertEqual(set(suppliers), {"대풍농산", "바이맥스", "CK"})
         onion = items[self.items[self.items["품목코드"] == "F1"].iloc[0]["품목명"]]
-        self.assertEqual((onion.base_unit, onion.daily_usage_g, onion.current_stock, onion.safety_stock_g), ("g", 1000.0, 3000.0, 2000.0))
+        self.assertEqual((onion.base_unit, onion.daily_usage_g, onion.current_stock, onion.safety_stock_g), ("g", 1000.0, 3000.0, 1000.0))
         self.assertEqual(onion.lead_time_days, 3)
         self.assertEqual(suppliers["대풍농산"].order_days_label, "화/목/토")
         nap = items[self.items[self.items["품목코드"] == "S1"].iloc[0]["품목명"]]
