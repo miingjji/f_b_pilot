@@ -11,6 +11,7 @@ class Supplier:
     name: str
     order_weekdays: frozenset   # 발주 가능 요일 (0=월 ... 6=일). 비어 있으면 실제 데이터가 없는 것
     lead_time_days: int | None  # 발주 후 입고까지 D+N. None 이면 실제 데이터가 없는 것
+    delivery_weekdays: frozenset = frozenset()   # 입고(배송) 가능 요일 (수불부 입고 실적). 비어 있으면 모르는 것 — 제한하지 않는다
 
     def __post_init__(self):
         if not all(0 <= d <= 6 for d in self.order_weekdays):

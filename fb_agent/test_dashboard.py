@@ -13,7 +13,7 @@ from models import StoreCalendar
 from reorder import Recommendation
 
 THU = date(2026, 10, 15)  # 목요일
-CAL = DEFAULT_CALENDAR    # 일요일 휴무
+CAL = StoreCalendar(closed_weekdays=frozenset({6}))    # 일요일 휴무 (달력·일정 계산을 시험하는 용도; 실제 기본 달력은 일요일도 영업)
 
 
 class Events(unittest.TestCase):

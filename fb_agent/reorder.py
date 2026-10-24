@@ -30,10 +30,13 @@ def fmt_date(d: date | None) -> str:
 
 
 def is_order_day(item: Item, d: date, cal: StoreCalendar) -> bool:
-    """발주 가능일: 거래처 발주 요일 + 매장 영업일 + 입고일이 매장 영업일."""
+    """발주 가능일: 거래처 발주 요일 + 매장 영업일 + 입고일이 매장 영업일이고 거래처가 배송하는 요일(알 때)."""
     lead = item.lead_time_days
-    return (lead is not None and d.weekday() in item.supplier.order_weekdays and cal.is_open(d)
-            and cal.is_open(d + timedelta(days=lead)))
+    if lead is None or d.weekday() not in item.supplier.order_weekdays or not cal.is_open(d):
+        return False
+    arrival = d + timedelta(days=lead)
+    deliver = item.supplier.delivery_weekdays
+    return cal.is_open(arrival) and (not deliver or arrival.weekday() in deliver)
 
 
 def order_days(item: Item, start: date, cal: StoreCalendar, n=SEARCH_DAYS) -> list[date]:

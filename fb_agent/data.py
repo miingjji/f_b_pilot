@@ -17,8 +17,9 @@ SUPPLIERS, ITEMS = load_master(MASTER_DIR)
 ITEMS_BY_CODE = {it.code: it for it in ITEMS.values()}
 DATASET_LABEL = f"테스트 마스터 · 품목 {len(ITEMS)}개" if TEST_MASTER else f"실제 데이터 기반 · 품목 {len(ITEMS):,}개"
 
-# 기본 매장 캘린더: 일요일 정기 휴무
-DEFAULT_CALENDAR = StoreCalendar(closed_weekdays=frozenset({SUN}))
+# 기본 매장 캘린더: 정기 휴무 요일 없음 — 입점 백화점은 일요일에도 영업한다 (일요일 POS 매출 142일).
+# 휴점일은 store_calendar(확정 휴점)에서, 거래처가 배송하지 않는 요일은 업체의 입고요일에서 따로 반영한다.
+DEFAULT_CALENDAR = StoreCalendar()
 
 # 시드 실사 재고: 품목명 -> (BOX, PK, 낱개)  (마스터의 현재재고량을 BOX/PK/낱개로 환산)
 SAMPLE_COUNTS = {name: to_boxes(it, it.current_stock or 0) for name, it in ITEMS.items()}

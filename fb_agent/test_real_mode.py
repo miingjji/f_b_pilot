@@ -68,6 +68,7 @@ note = lambda at: [i.value for i in at.info if "시뮬레이션" in i.value]
 s_after, s_before, s_input = render_at("po-auto", 2026, 10, 24), render_at("po-auto", 2026, 9, 15), render_at("stock-input", 2026, 10, 24)
 out["sim"] = {"after": note(s_after), "before": note(s_before), "input": note(s_input),
               "cols_after": sorted({c for d in s_after.dataframe for c in d.value.columns}),
+              "closed_wd": list(s_after.session_state["cfg_closed_wd"]),
               "urgent_after": next((m.value for m in s_after.metric if m.label == "긴급"), None),
               "urgent_before": next((m.value for m in s_before.metric if m.label == "긴급"), None),
               "exc": [e.message[:200] for at in (s_after, s_before, s_input) for e in at.exception]}
@@ -173,6 +174,8 @@ class RealMode(unittest.TestCase):
         self.assertEqual(len(r["after"]), 1)
         self.assertIn("9월 30일 월말 실사", r["after"][0])
         self.assertIn("10월 23일 마감", r["after"][0])                                    # 10-24 아침 재고 = 10-23 마감 재고
+        self.assertEqual(r["closed_wd"], [])                                             # 일요일에도 영업 (일요일 휴무는 데모 기본값이었다)
+        self.assertLessEqual(int(r["urgent_after"].rstrip("개")), 5)                                  # 10-24 긴급: 실제 신호만 남는다 (예전 24개)
         self.assertIn("이미 오는 중인 입고", r["after"][0])                                  # 발주 판단에 더한 입고 예정을 안내
         self.assertIn("오는 중 입고", r["cols_after"])
         self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에도 같은 안내

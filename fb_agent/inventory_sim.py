@@ -18,6 +18,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from master import SUNDAY_DELIVERY
+
 LEDGER = Path(__file__).resolve().parent / "data" / "cleaned" / "수불부"
 
 
@@ -144,6 +146,8 @@ def fit_items(L: Ledger, origin: str, plan: SalesPlan, p: Params) -> pd.DataFram
             w[d.weekday()] += 1
         w = w / w.sum()
         days = w >= p.day_share
+        if k in L.meta.index and L.meta.at[k, "거래처"] not in SUNDAY_DELIVERY and days[:6].any():
+            days[6] = False                                      # 일요일 입고는 CK 뿐이다
         rows[k] = dict(Q=float(np.median([q for _, q in ev])), n_ev=len(ev), **{f"w{i}": bool(days[i]) for i in range(7)})
     ev = pd.DataFrame.from_dict(rows, orient="index", columns=["Q", "n_ev"] + [f"w{i}" for i in range(7)])
     out = pd.DataFrame({"rate": rate, "level": level}).join(ev, how="left")

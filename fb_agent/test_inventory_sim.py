@@ -63,6 +63,15 @@ class Fit(unittest.TestCase):
         self.assertEqual((f.loc["A", "Q"], f.loc["A", "start"]), (10.0, 10.0))
         self.assertTrue(f.loc["A", "w1"] and not f.loc["A", "w2"])   # 화요일(1)에만 입고
 
+    def test_only_ck_receives_on_sundays(self):
+        sunday = [(date(2026, 4, 5), 3.0), (date(2026, 4, 12), 3.0), (date(2026, 4, 7), 3.0)]          # 일·일·화 입고 (일요일이 3분의 2)
+        L = ledger({"A": [10, 10, 10, 10], "B": [10, 10, 10, 10]}, {"A": [0, 10, 10, 10], "B": [0, 10, 10, 10]}, {"A": sunday, "B": sunday})
+        L.meta.loc["B", "거래처"] = "CK"
+        f = sim.fit_items(L, "2026-04", Plan(), sim.Params(k_event=3))
+        self.assertFalse(f.loc["A", "w6"])                           # 외부 업체는 일요일 입고가 없다
+        self.assertTrue(f.loc["A", "w1"])
+        self.assertTrue(f.loc["B", "w6"])                            # CK 는 일요일에도 입고
+
     def test_data_after_the_origin_is_not_used(self):
         L = ledger({"A": [10, 10, 10, 50]}, {"A": [0, 10, 10, 90]}, {"A": [(date(2026, 4, 7), 90.0)]})
         f = sim.fit_items(L, "2026-03", Plan(), sim.Params(k_rate=3))
