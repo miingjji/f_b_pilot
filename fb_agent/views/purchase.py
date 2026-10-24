@@ -5,8 +5,10 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+import inventory_sim
 import sales_data
 import reorder_engine
+import stock_sim
 import store_calendar
 from converter import parse_count
 from data import ITEMS, SUPPLIERS
@@ -445,9 +447,24 @@ def _engine(stamp: float):
     return reorder_engine.Engine()
 
 
+@st.cache_data(show_spinner=False)
+def _po_factors(origin: date, stamp: float) -> dict:
+    """구매청구 발주단위 ↔ 수불부 규격 수량 비율 (시뮬레이션 재고를 발주단위로 바꿀 때)."""
+    return inventory_sim.po_factors(inventory_sim.load_ledger(), _engine(stamp).b, f"{origin:%Y-%m}")
+
+
+def _sim_order_units(day: date, stamp: float) -> dict:
+    """{품목코드: day 아침 시뮬레이션 재고(발주단위)}. 쓸 예측이 없으면 {}."""
+    raw, info = stock_sim.sim_stock_raw(day)
+    if info is None:
+        return {}
+    fac = _po_factors(info["origin"], stamp)
+    return {c: q * fac[c] for c, q in raw.items() if c in fac}
+
+
 @st.cache_data(show_spinner="발주 추천을 계산하는 중…")
 def _engine_table(day: date, stamp: float) -> pd.DataFrame:
-    return _engine(stamp).recommend(day, use_stock=True).drop(columns=["_key"])
+    return _engine(stamp).recommend(day, use_stock=True, sim_stock=_sim_order_units(day, stamp)).drop(columns=["_key"])
 
 
 def _qty(q, unit) -> str:
@@ -502,8 +519,13 @@ def po_engine(leaf: Leaf):
     if counted is None:
         st.caption(":material/inventory_2: 재고 반영 없음 — 월말 실사재고 자료가 없습니다.")
     elif (day - counted).days > reorder_engine.STALE_DAYS:
-        st.caption(f":material/inventory_2: 최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 재고 추정은 쓰지 않았습니다 "
-                   f"(실사 후 {reorder_engine.STALE_DAYS}일 안에만 반영). 새 수불부를 올리면 반영됩니다.")
+        n_ref = int(t["재고"].notna().sum())
+        if n_ref:
+            st.caption(f":material/inventory_2: 최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 실사 추정 대신 시뮬레이션 재고를 참고로 보여 줍니다 ({n_ref}개 품목). "
+                       "발주할 시점 판단에는 쓰지 않고 '재고 넉넉' 주의와 '재고 확인' 품목의 근거에만 씁니다 (시뮬레이션 재고로 판정하면 맞은 비율이 낮아서).")
+        else:
+            st.caption(f":material/inventory_2: 최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 재고 추정은 쓰지 않았습니다 "
+                       f"(실사 후 {reorder_engine.STALE_DAYS}일 안에만 반영). 시뮬레이션 예측이 없는 날짜입니다.")
     else:
         st.caption(f":material/inventory_2: {counted:%Y-%m-%d} 월말 실사 + 그 뒤 입고 − 예상 소비로 재고를 추정했습니다 ({int(t['재고'].notna().sum())}개 품목).")
     orders = t[t["상태"] == "발주"].sort_values(["거래처", "확률"], ascending=[True, False])

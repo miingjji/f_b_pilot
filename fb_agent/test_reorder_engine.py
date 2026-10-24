@@ -179,6 +179,52 @@ class StockFromCounts(unittest.TestCase):
         self.assertIn("재고가 넉넉할 수 있음", r["사유"])
 
 
+class StockFromSimulation(unittest.TestCase):
+    """실사 후 14일이 지난 날짜에는 시뮬레이션 재고를 참고로만 쓴다: 표시와 '재고 넉넉' 주의에는 쓰고, 주문 간격이 긴 품목의 발주 판정은 바꾸지 않는다."""
+
+    def setUp(self):
+        self.long_item = ("0003", "카레", "1kg")
+        self.book = make_book({self.long_item: every(date(2025, 3, 3), date(2025, 12, 14), 20, 4), K: every(date(2025, 6, 2), date(2025, 12, 19), 2, 3)})
+        self.hist = pd.Series(3_000_000.0, index=list(self.book.daily.index))
+        self.D = date(2025, 12, 17)
+
+    def engine(self, model=None):
+        return re_.Engine(book=self.book, hist=self.hist, model=model, counts={})                # 월말 실사 없음 = 실사 추정은 못 쓰는 상태
+
+    def test_long_cycle_status_does_not_follow_simulated_stock(self):
+        for sim in (0.0, 999.0):
+            r = self.engine().recommend_item(self.long_item, self.D, use_stock=True, sim_stock=sim)
+            self.assertEqual(r["상태"], "재고 확인")                                             # 판정은 하지 않는다
+            self.assertEqual(r["재고"], sim)                                                      # 참고로 표시
+            self.assertIn("시뮬레이션 재고", r["사유"])
+
+    def test_simulated_stock_is_ignored_unless_use_stock_or_when_on_hand_is_given(self):
+        e = self.engine()
+        self.assertTrue(np.isnan(e.recommend_item(self.long_item, self.D, sim_stock=5.0)["재고"]))
+        self.assertEqual(e.recommend_item(self.long_item, self.D, on_hand=0.0, use_stock=True, sim_stock=999.0)["재고"], 0.0)   # 실제 재고가 우선
+
+    def test_count_estimate_beats_simulated_stock(self):
+        e = re_.Engine(book=self.book, hist=self.hist, model=None, counts={"0003": [(date(2025, 12, 15), 999.0)]})
+        r = e.recommend_item(self.long_item, self.D, use_stock=True, sim_stock=0.0)
+        self.assertEqual(r["상태"], "보류")                                                       # 실사 추정(999)으로 판단하고 시뮬레이션 값은 쓰지 않는다
+        self.assertGreater(r["재고"], 100)
+
+    def test_ample_simulated_stock_flags_a_habit_order_without_changing_it(self):
+        feat = re_.FEATURES
+        rows = pd.DataFrame(np.zeros((40, len(feat))), columns=feat)
+        rows["gapratio"] = np.r_[np.zeros(20), np.ones(20) * 2]
+        rows["실제발주"] = np.r_[np.zeros(20), np.ones(20)]
+        model = re_.TimingModel.fit(rows)
+        last = self.book.by_item[K]["청구일자"].iloc[-1]
+        D = last + timedelta(days=3) if (last + timedelta(days=3)).weekday() != 6 else last + timedelta(days=4)
+        e = self.engine(model)
+        plain, ample = e.recommend_item(K, D, use_stock=True), e.recommend_item(K, D, use_stock=True, sim_stock=500.0)
+        self.assertEqual((plain["상태"], ample["상태"]), ("발주", "발주"))                       # 판단은 습관 그대로
+        self.assertEqual((plain["재고주의"], ample["재고주의"]), ("", "재고 넉넉"))
+        table = e.recommend(D, use_stock=True, sim_stock={K[0]: 500.0})                           # 표 전체 호출은 품목코드로 값을 넘긴다
+        self.assertEqual(table.set_index("코드").loc[K[0], "재고주의"], "재고 넉넉")
+
+
 class LoadCounts(unittest.TestCase):
     def write_month(self, root: Path, ym: str, count_qty: float, receipt_qty: float, code="0001"):
         d = root / ym[:4] / ym

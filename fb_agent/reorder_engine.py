@@ -273,7 +273,7 @@ class Engine:
         got = float(g[(g["도착"] > E) & (g["도착"] < D)]["수량"].sum())
         return max(0.0, q0 + got - rate * self.sales(D, E + timedelta(days=1), D))
 
-    def recommend_item(self, key: tuple, D: date, on_hand: float | None = None, use_stock: bool = False) -> dict:
+    def recommend_item(self, key: tuple, D: date, on_hand: float | None = None, use_stock: bool = False, sim_stock: float | None = None) -> dict:
         g = self.b.by_item[key]
         past = g[(g["청구일자"] < D) & (g["청구일자"] >= D - timedelta(days=365))]
         supplier, unit = (past["거래처"].mode().iloc[0] if len(past) else g["거래처"].iloc[-1]), g["발주단위"].iloc[-1]
@@ -317,11 +317,12 @@ class Engine:
         feat = dict(gapratio=min(4.0, since / mg), over=float(since >= mg - 0.5), dow=float(np.mean([x.weekday() == D.weekday() for x in od])),
                     lg=float(np.log(mg)), ln=float(np.log(len(od))), since=float(min(30, since)), lscale=float(np.log(max(0.2, scale))))
         rate = float(win["수량"].sum()) / S_win
-        est = self.stock_estimate(key, D, rate) if (use_stock and on_hand is None) else None      # 월말 실사로 추정한 재고
+        est = self.stock_estimate(key, D, rate) if (use_stock and on_hand is None) else None      # 월말 실사로 추정한 재고 (실사 후 STALE_DAYS 안)
+        ref = est if est is not None else (sim_stock if (use_stock and on_hand is None) else None)   # 참고 재고: 위 추정 > 시뮬레이션 재고
         long_cycle = raw_gap > LONG_GAP
         end = A2 if A2 else A + timedelta(days=gap)
         need = rate * self.sales(D, D, end)
-        shown = on_hand if on_hand is not None else est
+        shown = on_hand if on_hand is not None else ref
         if shown is not None:
             out["재고"], out["소비예상"] = float(shown), need
         if on_hand is not None or (est is not None and long_cycle):          # 실제 재고(또는 주문 간격이 길어 습관으로 못 보는 품목의 추정 재고)로 판단
@@ -333,9 +334,9 @@ class Engine:
             due, why = p >= self.model.th, f"발주 확률 {p * 100:.0f}% (임계 {self.model.th * 100:.0f}%) · 마지막 발주 {since}일 전 / 평소 주기 {mg:.0f}일"
         else:
             p, due, why = np.nan, since >= mg - 0.5, f"마지막 발주 {since}일 전 / 평소 주기 {mg:.0f}일 (확률 모델 없음)"
-        if est is not None and not np.isnan(p) and need > 0:                   # 습관으로 정한 발주에 재고 상황을 덧붙인다 (판단은 바꾸지 않음)
-            cover = est / need
-            why += f" · 예상 재고 {est:.1f}{unit}(입고 전 소비의 {cover:.1f}배)"
+        if ref is not None and not np.isnan(p) and need > 0:                   # 습관으로 정한 발주에 재고 상황을 덧붙인다 (판단은 바꾸지 않음)
+            cover = ref / need
+            why += f" · 예상 재고 {ref:.1f}{unit}(입고 전 소비의 {cover:.1f}배)"
             if due and cover > STOCK_AMPLE:
                 why += " — 재고가 넉넉할 수 있음, 확인 권장"
                 out["재고주의"] = "재고 넉넉"
@@ -345,16 +346,19 @@ class Engine:
         last = past.iloc[-1]
         out |= dict(상태="재고 확인" if long_cycle else ("발주" if due else "보류"), 확률=p, 권장수량=rnd(q), 상한수량=up(hi), 기준수량=base, 규모비=scale,
                     입고예정일=A, 커버일수=gap, 직전발주=f"{last['청구일자']:%m-%d} {last['수량']:g}", **feat,
-                    사유=(f"주문 간격 중앙값 {raw_gap:.0f}일 — 재고 없이는 시점 판단 불가, 마지막 발주 {since}일 전" if long_cycle else why))
+                    사유=(f"주문 간격 중앙값 {raw_gap:.0f}일 — 재고 없이는 시점 판단 불가, 마지막 발주 {since}일 전"
+                          + (f" · 시뮬레이션 재고 {ref:.1f}{unit}(입고 전 소비 {need:.1f}{unit}) 참고" if ref is not None else "") if long_cycle else why))
         return out
 
-    def recommend(self, D: date, suppliers=None, on_hand: dict | None = None, use_stock: bool = False) -> pd.DataFrame:
-        """use_stock=True 면 직전 월말 실사재고로 재고를 추정해 쓴다 (실사가 STALE_DAYS 안인 품목만; 나머지는 주문 습관 기준)."""
+    def recommend(self, D: date, suppliers=None, on_hand: dict | None = None, use_stock: bool = False, sim_stock: dict | None = None) -> pd.DataFrame:
+        """use_stock=True 면 재고를 추정해 쓴다: 직전 월말 실사로 추정(실사 후 STALE_DAYS 안만), 그 밖의 품목·날짜는 sim_stock({품목코드: 발주단위 재고}, 시뮬레이션 재고).
+        판단(주문 간격이 긴 품목의 발주 여부)에는 실사 추정만 쓰고, 시뮬레이션 재고는 표시와 '재고 넉넉' 주의에만 쓴다 — 백테스트에서 시뮬레이션 재고로 한
+        발주 판정은 맞은 비율이 17%(기준선 10%)로 약했지만, '재고 넉넉' 표시는 실제 발주율을 67%→54%로 낮췄다. 재고를 모르는 품목은 주문 습관 기준."""
         rows = []
         for key, g in self.b.by_item.items():
             if g["청구일자"].iloc[0] >= D:
                 continue
-            r = self.recommend_item(key, D, (on_hand or {}).get(key), use_stock)
+            r = self.recommend_item(key, D, (on_hand or {}).get(key), use_stock, (sim_stock or {}).get(key[0]))
             if suppliers is None or r["거래처"] in suppliers:
                 rows.append(r)
         return pd.DataFrame(rows)
