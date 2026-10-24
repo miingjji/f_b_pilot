@@ -88,7 +88,7 @@ def stock_note() -> str:
     if not _simulated(s):
         return ""
     note = sim_stock_note(s["seed"][0])
-    return note + (f" 발주 판단(잔여일·소진일·긴급)에는 시뮬레이션이 예측한 리드타임 안의 입고 {len(s['on_order'])}개 품목분을 이미 오는 중인 입고로 더했습니다." if s["on_order"] else "")
+    return note + (f" 발주 판단(잔여일·소진일·긴급)에는 이미 오는 중인 입고 {len(s['on_order'])}개 품목분을 더했습니다 — 구매청구에 기록된 오는 중인 주문, 구매청구 이력이 없는 품목(CK 등)은 시뮬레이션 예상 입고." if s["on_order"] else "")
 
 
 def get_today() -> date:

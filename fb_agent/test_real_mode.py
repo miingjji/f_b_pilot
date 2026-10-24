@@ -175,7 +175,7 @@ class RealMode(unittest.TestCase):
         self.assertIn("9월 30일 월말 실사", r["after"][0])
         self.assertIn("10월 23일 마감", r["after"][0])                                    # 10-24 아침 재고 = 10-23 마감 재고
         self.assertEqual(r["closed_wd"], [])                                             # 일요일에도 영업 (일요일 휴무는 데모 기본값이었다)
-        self.assertLessEqual(int(r["urgent_after"].rstrip("개")), 5)                                  # 10-24 긴급: 실제 신호만 남는다 (예전 24개)
+        self.assertLessEqual(int(r["urgent_after"].rstrip("개")), 12)                                 # 10-24 긴급: 실제 입고·오는 중인 주문을 반영한 값 (처음엔 24개)
         self.assertIn("이미 오는 중인 입고", r["after"][0])                                  # 발주 판단에 더한 입고 예정을 안내
         self.assertIn("오는 중 입고", r["cols_after"])
         self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에도 같은 안내

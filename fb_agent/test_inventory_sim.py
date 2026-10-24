@@ -215,9 +215,32 @@ class Frozen(unittest.TestCase):
         self.assertAlmostEqual(R.loc[0, "정밀도"], 1 / 3)       # 같은 날: 4/7 만 맞음
         self.assertAlmostEqual(R.loc[1, "정밀도"], 2 / 3)       # ±1일: 4/14↔4/15 도 맞음
         self.assertAlmostEqual(R.loc[1, "재현율"], 2 / 4)
-        short = SimpleNamespace(orders=pd.DataFrame({"청구일자": [date(2026, 4, 10)]}), by_item={})
+        mid = SimpleNamespace(orders=pd.DataFrame({"청구일자": [date(2026, 4, 15)]}), by_item=book.by_item)                 # 구매청구가 4/15 까지만 있다
+        M = sim.verify_orders("2026-04", out_dir=out, book=mid).set_index("허용 오차(일)")
+        self.assertEqual(M.loc[0, "비교 기간"], "2026-04-01~2026-04-15")                                                   # 그 날까지만 견준다
+        self.assertEqual((M.loc[0, "예측 발주"], M.loc[0, "실제 발주"]), (2, 2))                                            # 예측 4/7·4/14, 실제 4/7·4/15 (4/21·4/28·4/30 은 기간 밖)
+        self.assertAlmostEqual(M.loc[0, "정밀도"], 1 / 2)
+        self.assertAlmostEqual(M.loc[1, "재현율"], 1.0)
+        early = SimpleNamespace(orders=pd.DataFrame({"청구일자": [date(2026, 3, 31)]}), by_item={})
         with self.assertRaises(FileNotFoundError):
-            sim.verify_orders("2026-04", out_dir=out, book=short)                              # 구매청구가 그 달을 덮지 못하면 비교하지 않는다
+            sim.verify_orders("2026-04", out_dir=out, book=early)                              # 구매청구가 그 달에 닿지 않으면 비교하지 않는다
+
+    def test_verify_po_receipts_compares_expected_receipts_with_actual_arrivals(self):
+        from types import SimpleNamespace
+        out = Path(tempfile.mkdtemp())
+        d = out / "2026-03_출발"
+        d.mkdir()
+        pd.DataFrame({"일자": ["2026-04-02", "2026-04-09", "2026-04-20"], "key": ["A", "A", "A"], "예상입고": [4.0, 4.0, 4.0]}).to_csv(d / "일별_예측.csv", index=False)
+        L = ledger({"A": [1, 1, 1, 1]}, {"A": [0, 10, 20, 10]})                                                         # 발주단위와 같은 단위 (비율 1: 2월 10, 3월 20)
+        orders = pd.DataFrame({"품목코드_RMS": ["A", "A", "A", "A", "A", "A"],
+                               "도착": [date(2026, 2, 10), date(2026, 3, 10), date(2026, 3, 20), date(2026, 4, 2), date(2026, 4, 8), date(2026, 4, 20)],
+                               "수량": [10.0, 10.0, 10.0, 6.0, 6.0, 6.0], "청구일자": [date(2026, 2, 8)] * 3 + [date(2026, 4, 1)] * 3})
+        book = SimpleNamespace(orders=orders.assign(청구일자=[date(2026, 2, 8), date(2026, 3, 8), date(2026, 3, 18), date(2026, 3, 30), date(2026, 4, 6), date(2026, 4, 15)]))
+        R = sim.verify_po_receipts("2026-04", out_dir=out, book=book, L=L).set_index("방법")
+        self.assertEqual(R.loc["시뮬레이션", "예측 합"], 8.0)                                                              # 4/2 와 4/9 의 예상 입고 4+4 (4/20 은 구매청구가 4/15 까지라 비교 밖)
+        self.assertEqual(R.loc["시뮬레이션", "실제 입고 합"], 12.0)                                                         # 4/2 6 + 4/8 6 (4/20 은 비교 밖)
+        self.assertAlmostEqual(R.loc["시뮬레이션", "WAPE"], 4 / 12)
+        self.assertAlmostEqual(R.loc["시뮬레이션", "편향"], -4 / 12)
 
     def test_verify_waits_for_the_month_to_exist(self):
         L = ledger({"A": [1, 1, 1, 1]}, {"A": [0, 0, 0, 0]})

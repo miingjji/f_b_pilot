@@ -22,9 +22,9 @@ def make_forecast() -> Path:
     return root
 
 
-ITEMS = {"G": SimpleNamespace(name="간장 1kg", pk_weight_g=1000.0, current_stock=3000.0, lead_time_days=2),     # 중량 품목: 수불부 1 = 1,000 g
-         "C": SimpleNamespace(name="냅킨", pk_weight_g=1.0, current_stock=5.0, lead_time_days=3),               # 개수 품목
-         "U": SimpleNamespace(name="빨대", pk_weight_g=1.0, current_stock=None, lead_time_days=2)}              # 재고를 모르는 소모품
+ITEMS = {"G": SimpleNamespace(name="간장 1kg", pk_weight_g=1000.0, current_stock=3000.0, lead_time_days=2, box_pk=1.0, base_unit="g"),     # 중량 품목: 수불부 1 = 1,000 g
+         "C": SimpleNamespace(name="냅킨", pk_weight_g=1.0, current_stock=5.0, lead_time_days=3, box_pk=1.0, base_unit="개"),               # 개수 품목
+         "U": SimpleNamespace(name="빨대", pk_weight_g=1.0, current_stock=None, lead_time_days=2, box_pk=1.0, base_unit="개")}              # 재고를 모르는 소모품
 
 
 class SimStock(unittest.TestCase):
@@ -83,6 +83,57 @@ class SimInbound(unittest.TestCase):
         self.assertEqual(stock_sim.sim_inbound(date(2026, 10, 2), items, self.root), {})
         items = {"C": SimpleNamespace(name="냅킨", pk_weight_g=1.0, current_stock=None, lead_time_days=3)}
         self.assertEqual(stock_sim.sim_inbound(date(2026, 10, 2), items, self.root), {})
+
+
+def make_requests(rows) -> Path:
+    """구매청구 정제본 흉내: rows = (코드, 청구일, 납기일, 입고일 또는 None, 발주수량, 입고수량)."""
+    root = Path(tempfile.mkdtemp())
+    (root / "2026").mkdir()
+    pd.DataFrame([{"청구일자": c, "납기일자": n, "입고일자": r or "미입고", "품목코드_RMS": k, "규격": "1kg/pk", "발주단위": "팩", "발주수량": q, "입고단위": "팩", "입고수량": g}
+                  for k, c, n, r, q, g in rows]).to_csv(root / "2026" / "구매청구_정제.csv", index=False)
+    return root
+
+
+class ActualFlows(unittest.TestCase):
+    """구매청구에 기록된 실제 입고·오는 중인 주문으로 시뮬레이션을 바로잡는다. 냅킨(C): 개수 품목, 간장(G): 1kg/pk 중량 품목(1 PK = 1,000g).
+    예측: 냅킨은 10-02·10-04 에 3씩 입고, 재고 10-01 6 → 10-04 3. 간장은 입고 없음, 재고 10-04 2."""
+
+    def setUp(self):
+        self.fc = make_forecast()
+        self.cl = make_requests([
+            ("C", "2026-09-29", "2026-10-02", "2026-10-02", 3, 2),      # 10-02 에 (예상 3 대신) 2 도착
+            ("C", "2026-10-03", "2026-10-06", None, 4, 0),              # 10-03 청구, 10-06 도착 예정 = 오는 중
+            ("G", "2026-10-02", "2026-10-03", "2026-10-03", 1, 1),      # 간장은 예상 입고가 없었는데 1 PK 도착
+        ])
+
+    def test_actual_flows_split_arrived_and_in_transit(self):
+        f = stock_sim.actual_flows(ITEMS, date(2026, 9, 30), date(2026, 10, 3), self.cl)
+        self.assertEqual(f["arrived"], {"냅킨": 2.0, "간장 1kg": 1000.0})                     # 입고수량 → 기본단위 (1kg/pk → 1,000g)
+        self.assertEqual(f["transit"], {"냅킨": 4.0})                                          # 10-04 아침: 10-03 청구, 10-06 도착 예정
+        early = stock_sim.actual_flows(ITEMS, date(2026, 9, 30), date(2026, 10, 3), self.cl, placed_by=date(2026, 10, 2))
+        self.assertEqual(early["transit"], {})                                                 # 10-02 까지 청구한 것만 보면 오는 중인 주문이 없다
+        self.assertEqual((f["last_request"], f["last_receipt"], f["po_items"]), (date(2026, 10, 3), date(2026, 10, 3), {"냅킨", "간장 1kg"}))
+        self.assertIsNone(stock_sim.actual_flows(ITEMS, date(2026, 9, 30), date(2026, 10, 3), Path(tempfile.mkdtemp())))   # 정제본이 없으면 None
+
+    def test_actual_receipts_replace_simulated_receipts_in_the_stock(self):
+        sim, info = stock_sim.sim_stock(date(2026, 10, 5), ITEMS, self.fc, Path(tempfile.mkdtemp()))        # 구매청구 정제본 없음 = 시뮬레이션 그대로
+        adj, info2 = stock_sim.sim_stock(date(2026, 10, 5), ITEMS, self.fc, self.cl)
+        self.assertEqual((sim["냅킨"], sim["간장 1kg"], info["actual_until"]), (3.0, 2000.0, None))
+        # 실제 입고가 기록된 마지막 날(10-03)까지: 냅킨 3 − 시뮬레이션 누적 입고 3(10-02) + 실제 2 = 2, 간장 2,000 − 0 + 1,000 = 3,000
+        self.assertEqual((adj["냅킨"], adj["간장 1kg"]), (2.0, 3000.0))
+        self.assertEqual((info2["actual_until"], info2["actual_items"]), (date(2026, 10, 3), 2))
+
+    def test_items_without_any_actual_flow_keep_the_simulation(self):
+        cl = make_requests([("C", "2026-06-01", "2026-06-03", "2026-06-03", 1, 1)])           # 구매청구 이력은 있지만 10월 흐름이 없다 (휴면 의심)
+        adj, info = stock_sim.sim_stock(date(2026, 10, 5), ITEMS, self.fc, cl)
+        self.assertEqual((adj["냅킨"], info["actual_until"]), (3.0, None))
+
+    def test_in_transit_orders_replace_simulated_inbound_for_purchase_items(self):
+        self.assertEqual(stock_sim.sim_inbound(date(2026, 10, 4), ITEMS, self.fc, self.cl), {"냅킨": 4.0})   # 실제 오는 중 4 (시뮬레이션 10-04 의 3 이 아니다)
+        none = Path(tempfile.mkdtemp())
+        self.assertEqual(stock_sim.sim_inbound(date(2026, 10, 4), ITEMS, self.fc, none), {"냅킨": 3.0})        # 구매청구 정제본이 없으면 시뮬레이션: 10-04~10-06 입고 3
+        later = make_requests([("C", "2026-09-29", "2026-10-02", "2026-10-02", 3, 2)])                          # 구매청구가 10-02 까지만 기록
+        self.assertEqual(stock_sim.sim_inbound(date(2026, 10, 4), ITEMS, self.fc, later), {"냅킨": 3.0})        # 전날(10-03) 청구가 비어 있으면 시뮬레이션을 쓴다
 
 
 class OrderPlan(unittest.TestCase):

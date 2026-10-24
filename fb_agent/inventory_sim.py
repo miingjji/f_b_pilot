@@ -442,28 +442,65 @@ def order_plan(origin: str | None = None, months: int = 3, out_dir: Path | None 
     return target
 
 
+def _window(month: str, book) -> tuple[date, date]:
+    """비교 기간 [월 1일, min(월말, 구매청구 자료의 마지막 청구일)]. 자료가 그 달에 닿지 않으면 FileNotFoundError."""
+    start, last = date(int(month[:4]), int(month[5:]), 1), book.orders["청구일자"].max()
+    if last < start:
+        raise FileNotFoundError(f"구매청구 자료가 {last}까지라 {month} 를 비교할 수 없습니다.")
+    return start, min(month_end(month), last)
+
+
 def verify_orders(month: str, origin: str | None = None, out_dir: Path | None = None, book=None, tol: int = 1) -> pd.DataFrame:
-    """동결한 발주일 예측과 그 달의 실제 구매청구를 견준다 (품목별 발주일이 같은 날 / ±tol 일 안에 맞았나). 구매청구 자료가 그 달을 덮어야 한다."""
+    """동결한 발주일 예측과 그 달의 실제 구매청구를 견준다 (품목별 발주일이 같은 날 / ±tol 일 안에 맞았나).
+    구매청구 자료가 그 달 중간까지만 있으면 그 날까지만 견준다 (표의 '비교 기간')."""
     import reorder_engine as re
     origin = origin or add_month(month, -1)
     d = (out_dir or FORECAST_DIR) / f"{origin}_출발" / "발주일_예측.csv"
     if not d.exists():
         raise FileNotFoundError(f"{d} 가 없습니다.")
     book = book or re.load_book()
+    a, z = _window(month, book)
     plan = pd.read_csv(d, dtype={"품목코드": str})
     plan["발주일"] = pd.to_datetime(plan["발주일"]).dt.date
-    plan = plan[[f"{x:%Y-%m}" == month for x in plan["발주일"]]]
-    if book.orders["청구일자"].max() < month_end(month):
-        raise FileNotFoundError(f"구매청구 자료가 {book.orders['청구일자'].max()}까지라 {month} 전체를 비교할 수 없습니다.")
-    act = {(k[0], dd) for k, g in book.by_item.items() for dd in g["청구일자"] if f"{dd:%Y-%m}" == month and k[0] in set(plan["품목코드"])}
+    plan = plan[[a <= x <= z for x in plan["발주일"]]]
+    codes = set(plan["품목코드"])
+    act = {(k[0], dd) for k, g in book.by_item.items() for dd in g["청구일자"] if a <= dd <= z and k[0] in codes}
     pred = set(zip(plan["품목코드"], plan["발주일"]))
-    near = lambda a, S, n: any(x[0] == a[0] and abs((a[1] - x[1]).days) <= n for x in S)
+    near = lambda x, S, n: any(y[0] == x[0] and abs((x[1] - y[1]).days) <= n for y in S)
     rows = []
     for n in (0, tol):
         p, r = sum(near(x, act, n) for x in pred) / max(1, len(pred)), sum(near(x, pred, n) for x in act) / max(1, len(act))
-        rows.append({"허용 오차(일)": n, "예측 발주": len(pred), "실제 발주": len(act), "정밀도": p, "재현율": r, "F1": 2 * p * r / max(1e-9, p + r)})
+        rows.append({"비교 기간": f"{a}~{z}", "허용 오차(일)": n, "예측 발주": len(pred), "실제 발주": len(act), "정밀도": p, "재현율": r, "F1": 2 * p * r / max(1e-9, p + r)})
     R = pd.DataFrame(rows)
     R.to_csv(d.with_name(f"검증_{month}_발주일.csv"), index=False, encoding="utf-8-sig")
+    return R
+
+
+def verify_po_receipts(month: str, origin: str | None = None, out_dir: Path | None = None, book=None, L: Ledger | None = None) -> pd.DataFrame:
+    """동결한 예상 입고와 실제 입고를 구매청구 품목에 대해 견준다 (발주단위). 실제 입고 = 구매청구의 도착일(입고일, 없으면 납기일)이 비교 기간 안인 발주수량.
+    기준선 = 출발 전 3개월의 하루 평균 입고 × 비교 기간 일수. 구매청구 자료가 그 달 중간까지만 있으면 그 날까지만 견준다."""
+    import reorder_engine as re
+    origin = origin or add_month(month, -1)
+    d = (out_dir or FORECAST_DIR) / f"{origin}_출발"
+    book = book or re.load_book()
+    L = L or load_ledger(upto=origin)
+    a, z = _window(month, book)
+    fac = po_factors(L, book, origin)
+    daily = pd.read_csv(d / "일별_예측.csv", dtype={"key": str})
+    daily["일자"] = pd.to_datetime(daily["일자"]).dt.date
+    daily = daily[[a <= x <= z and k in fac for x, k in zip(daily["일자"], daily["key"])]]
+    pred = daily.groupby("key")["예상입고"].sum() * pd.Series(fac)
+    o = book.orders[book.orders["품목코드_RMS"].isin(fac)]
+    actual = o[[a <= x <= z for x in o["도착"]]].groupby("품목코드_RMS")["수량"].sum()
+    b0 = month_end(add_month(origin, -3))
+    past = o[[b0 < x <= month_end(origin) for x in o["도착"]]].groupby("품목코드_RMS")["수량"].sum() / (month_end(origin) - b0).days * ((z - a).days + 1)
+    idx = sorted(set(pred.index) | set(actual.index))
+    P, A, B0 = (s.reindex(idx).fillna(0.0) for s in (pred, actual, past))
+    wape = lambda x: float((x - A).abs().sum() / max(1e-9, A.sum()))
+    bias = lambda x: float((x.sum() - A.sum()) / max(1e-9, A.sum()))
+    R = pd.DataFrame([{"비교 기간": f"{a}~{z}", "품목수": len(idx), "실제 입고 합": float(A.sum()), "방법": "시뮬레이션", "WAPE": wape(P), "편향": bias(P), "예측 합": float(P.sum())},
+                      {"비교 기간": f"{a}~{z}", "품목수": len(idx), "실제 입고 합": float(A.sum()), "방법": "출발 전 3개월 평균 속도", "WAPE": wape(B0), "편향": bias(B0), "예측 합": float(B0.sum())}])
+    R.to_csv(d / f"검증_{month}_입고(구매청구).csv", index=False, encoding="utf-8-sig")
     return R
 
 
@@ -475,7 +512,7 @@ def main(argv=None) -> int:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--verify", metavar="YYYY-MM", help="동결한 예측과 그 달 실제 수불부를 비교")
     ap.add_argument("--orders", nargs="?", const="", metavar="출발월", help="동결한 예측과 같은 출발에서 발주일 예측을 만들어 저장")
-    ap.add_argument("--verify-orders", metavar="YYYY-MM", help="동결한 발주일 예측과 그 달 실제 구매청구를 비교")
+    ap.add_argument("--verify-orders", metavar="YYYY-MM", help="동결한 발주일 예측·예상 입고를 그 달 실제 구매청구와 비교 (자료가 월 중간까지면 그 날까지)")
     a = ap.parse_args(argv)
     pd.set_option("display.width", 200)
     if a.backtest:
@@ -497,6 +534,7 @@ def main(argv=None) -> int:
         return 0
     if a.verify_orders:
         print(verify_orders(a.verify_orders).round(3).to_string(index=False))
+        print(verify_po_receipts(a.verify_orders).round(3).to_string(index=False))
         return 0
     ap.print_help()
     return 0

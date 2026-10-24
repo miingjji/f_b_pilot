@@ -18,6 +18,10 @@ FILES = {
     "입고": "입고_리스트_26.01_26.09.md",
     "매출일자별": "매출분석_일자별_26.01_26.09.md",
 }
+FILES_2026_10 = {  # 2026-10 (10-24까지) 구매청구·입고만 먼저 받았다 — 일자별 매출은 아직 없다
+    "구매청구": "구매청구_리스트_26.10.md",
+    "입고": "입고_리스트_26.10.md",
+}
 FILES_2025 = {     # --year 2025: 2025-01~11 전년동기 데이터 (파일명 구분자가 '-')
     "구매청구": "구매청구_리스트_25.01-25.11.md",
     "입고": "입고_리스트_25.01-25.11.md",
@@ -34,7 +38,7 @@ FILES_2024 = {     # --year 2024: 2024-01~12 (구매청구는 2025-01-02 입고�
     "매출일자별": "매출분석_일자별_24.md",
 }
 # 연도마다 [(파일 묶음, 일자별 매출에서 영업하지 않은 날을 '무매출일'로 채울 시작일)]. 묶음마다 정제·점검한 뒤 합친다.
-PARTS = {2026: [(FILES, "2026-01-01")], 2024: [(FILES_2024, "2024-01-01")], 2025: [(FILES_2025, "2025-01-01"), (FILES_2025_12, "2025-12-01")]}
+PARTS = {2026: [(FILES, "2026-01-01"), (FILES_2026_10, None)], 2024: [(FILES_2024, "2024-01-01")], 2025: [(FILES_2025, "2025-01-01"), (FILES_2025_12, "2025-12-01")]}
 START = {y: parts[0][1] for y, parts in PARTS.items()}
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 WEEKDAY = "월화수목금토일"
@@ -355,8 +359,10 @@ def main(argv=None) -> int:
     cleaned = {name: [] for name, _fn in CLEANERS}
     reports = {name: [] for name, _fn in CLEANERS}
     for k, (files, start) in enumerate(parts):
-        tag = f" [{files['매출일자별'].rsplit('_', 1)[-1][:-3]}]" if len(parts) > 1 else ""
+        tag = f" [{files.get('매출일자별', files['구매청구']).rsplit('_', 1)[-1][:-3]}]" if len(parts) > 1 else ""
         for name, fn in CLEANERS:
+            if name not in files:                                  # 이 묶음에 없는 파일(10월분은 일자별 매출이 아직 없다)
+                continue
             table, report, info = fn(read_rows(Path(a.src) / files[name]), **({"start": start} if name == "매출일자별" else {}))
             cleaned[name].append(table)
             reports[name].append(report)
