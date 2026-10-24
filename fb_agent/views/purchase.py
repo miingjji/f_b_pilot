@@ -576,6 +576,17 @@ def po_engine(leaf: Leaf):
         st.download_button("발주 추천 내려받기 (CSV)", df.to_csv(index=False).encode("utf-8-sig"), file_name=f"발주추천_{day:%Y%m%d}.csv", mime="text/csv",
                            icon=":material/download:")
 
+    plan = stock_sim.sim_order_plan(day)
+    if plan is not None and len(plan):
+        with st.expander(f"앞으로 2주 발주 예정 ({len(plan)}건) — 시뮬레이션 예측", icon=":material/event_upcoming:"):
+            st.caption("재고·입고 시뮬레이션이 예측한 입고에서 거꾸로 계산한 발주일입니다(업체 발주 요일·리드타임·휴점 반영). 과거 검증에서 예측한 발주의 81%가 "
+                       "실제 발주일과 ±1일 안에 맞았고(같은 날 66%), 실제 발주의 72%를 잡았습니다. 날짜는 하루쯤 어긋날 수 있어요. 구매청구 이력이 있는 품목만 나옵니다.")
+            by_day = plan.groupby("발주일").agg(건수=("품목코드", "size"), 거래처=("거래처", lambda s: ", ".join(sorted(set(s))))).reset_index()
+            by_day["발주일"] = [fmt_date(d) for d in by_day["발주일"]]
+            st.dataframe(by_day, hide_index=True, width="stretch", alt="날짜별 발주 예정 건수")
+            show = plan.assign(발주일=[fmt_date(d) for d in plan["발주일"]], 입고예정=[fmt_date(d) for d in plan["입고예정일"]],
+                               수량=[_qty(round(q, 1), u) for q, u in zip(plan["수량_발주단위"], plan["발주단위"])])
+            st.dataframe(show[["발주일", "거래처", "품명", "규격", "수량", "입고예정"]], hide_index=True, width="stretch", alt="품목별 발주 예정")
     with st.expander(f"시즌 시작 예상 ({n_season}건) — 작년 이맘때 주문했던 시즌 품목"):
         x = t[t["상태"] == "시즌 시작 예상"][["거래처", "품목", "규격", "직전발주", "사유"]]
         st.caption("계절 메뉴 때문에 특정 시기에만 주문하는 품목입니다. 시즌 메뉴가 시작되면 발주 추천에 자동으로 나타나요. 집기·소모품도 함께 표시될 수 있습니다.")
