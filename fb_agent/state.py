@@ -5,7 +5,7 @@ import streamlit as st
 
 from config import default_today
 from data import DEFAULT_CALENDAR, ITEMS
-from insights import build_table, master_stock_g, recommendations, stock_from_table
+from insights import build_table, master_stock_g, recommendations, sim_on_order, sim_stock_note, stock_from_table
 from menu import STORES
 from models import StoreCalendar
 from viewport import is_mobile, viewport
@@ -52,13 +52,42 @@ def get_store() -> str:
 
 
 def inv_state() -> dict:
-    """현재 매장의 재고 상태: table(BOX/PK/낱개 표), ver(data_editor 키), applied(적용한 업로드 파일), stock_g."""
+    """현재 매장의 재고 상태: table(BOX/PK/낱개 표), ver(data_editor 키), applied(적용한 업로드 파일), stock_g, seed(시드 표·기준일).
+    사용자가 손대지 않은 시드 재고는 기준일이 바뀌면 그 날의 시뮬레이션 재고로 다시 만든다."""
     inv = st.session_state.inv
-    store = get_store()
-    if store not in inv:
-        table = build_table(master_stock_g())
-        inv[store] = {"table": table, "ver": 0, "applied": None, "stock_g": stock_from_table(table)[0]}
-    return inv[store]
+    store, today = get_store(), get_today()
+    s = inv.get(store)
+    if s is None or (s["applied"] is None and s["seed"][0] != today and s["table"].equals(s["seed"][1])):
+        table = build_table(master_stock_g(today))
+        s = inv[store] = {"table": table, "ver": 0 if s is None else s["ver"] + 1, "applied": None, "stock_g": stock_from_table(table)[0], "seed": (today, table.copy()), "on_order": sim_on_order(today)}
+    return s
+
+
+def _simulated(s: dict) -> bool:
+    """재고가 시뮬레이션 시드 그대로인가 (사용자가 고치거나 실사 파일을 올리지 않았다)."""
+    return s["applied"] is None and s["table"].equals(s["seed"][1])
+
+
+def on_order_g() -> dict:
+    """{품목명: 이미 오는 중인 입고(기본단위)}. 시뮬레이션 재고를 그대로 쓰는 동안만 — 실사를 직접 입력했으면 그 시점의 입고는 알 수 없어 비운다."""
+    s = inv_state()
+    return s["on_order"] if _simulated(s) else {}
+
+
+def position_g() -> dict:
+    """발주 판단에 쓰는 재고 포지션 = 현재 재고 + 이미 오는 중인 입고."""
+    s = inv_state()
+    oo = on_order_g()
+    return {n: g + oo.get(n, 0.0) for n, g in s["stock_g"].items()}
+
+
+def stock_note() -> str:
+    """재고가 시뮬레이션 값 그대로이면 그 안내, 사용자가 고쳤거나 실사 파일을 올렸으면 빈 문자열."""
+    s = inv_state()
+    if not _simulated(s):
+        return ""
+    note = sim_stock_note(s["seed"][0])
+    return note + (f" 발주 판단(잔여일·소진일·긴급)에는 시뮬레이션이 예측한 리드타임 안의 입고 {len(s['on_order'])}개 품목분을 이미 오는 중인 입고로 더했습니다." if s["on_order"] else "")
 
 
 def get_today() -> date:
@@ -72,7 +101,7 @@ def get_calendar() -> StoreCalendar:
 
 def get_recs():
     """재고 화면을 아직 열지 않았다면 예시 재고로 계산."""
-    return recommendations(inv_state()["stock_g"], get_today(), get_calendar())
+    return recommendations(position_g(), get_today(), get_calendar())
 
 
 DOCK_MIN_VIEWPORT = 1760        # 자동 모드에서 에이전트를 옆에 고정하는 최소 창 폭

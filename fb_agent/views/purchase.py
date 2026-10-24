@@ -17,7 +17,7 @@ from menu import STORES, Leaf
 from models import fmt_amount
 from order_units import UNIT_SHORT, WHOLE_UNITS, packs_for
 from reorder import fmt_date, is_order_day, order_days, recommend, safety_stock
-from state import get_calendar, get_store, get_today, inv_state
+from state import get_calendar, get_store, get_today, inv_state, on_order_g, position_g, stock_note
 from unit_info import display_unit, qty_for, qty_of, stock_of, unit_name, units_of
 from views import register
 from views.common import kpis
@@ -40,10 +40,10 @@ STATUS_ORDER = {s: i for i, s in enumerate(STATUS)}
 
 # ---------------- 공통 ----------------
 def current_results():
-    """(품목, 총 재고(기본단위), 추천) 목록. 현재 매장의 재고 기준."""
-    stock = inv_state()["stock_g"]
+    """(품목, 총 재고(기본단위), 추천) 목록. 현재 매장의 재고 기준. 추천은 재고에 이미 오는 중인 입고(시뮬레이션 예측)를 더한 값으로 계산한다."""
+    stock, pos = inv_state()["stock_g"], position_g()
     today, cal = get_today(), get_calendar()
-    out = [(ITEMS[n], g, recommend(ITEMS[n], g, today, cal)) for n, g in stock.items() if n in ITEMS]
+    out = [(ITEMS[n], g, recommend(ITEMS[n], pos[n], today, cal)) for n, g in stock.items() if n in ITEMS]     # 판단은 재고 + 이미 오는 중인 입고
     return sorted(out, key=lambda x: STATUS_ORDER[x[2].status])
 
 
@@ -76,7 +76,8 @@ def rec_card(item, g, r, *, request_button=False):
             st.markdown(f"**{item.name}** · {item.supplier.name}")
         st.markdown(r.message)
         with st.container(horizontal=True):
-            st.metric("재고", stock_of(item, g), item.fmt(g), delta_color="off", delta_arrow="off", border=True)
+            coming = on_order_g().get(item.name, 0.0)
+            st.metric("재고", stock_of(item, g), item.fmt(g) + (f" · 오는 중 {stock_of(item, coming)}" if coming else ""), delta_color="off", delta_arrow="off", border=True)
             st.metric("잔여", "-" if r.days_left is None else f"{r.days_left:.1f}일", f"소진 {fmt_date(r.stockout_date)}",
                       delta_color="off", delta_arrow="off", border=True)
             st.metric("발주 → 입고", fmt_date(r.order_date), fmt_date(r.arrival_date), delta_color="off", delta_arrow="off", border=True)
@@ -263,8 +264,8 @@ def req_item_card(it, g, r):
 def po_request(leaf: Leaf):
     st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 한 번에 등록합니다. 승인되면 발주서로 전환해요.")
     today, cal = get_today(), get_calendar()
-    stock = inv_state()["stock_g"]
-    info = {it.name: (stock.get(it.name, 0.0), recommend(it, stock.get(it.name, 0.0), today, cal)) for it in ITEMS.values()}
+    stock, pos = inv_state()["stock_g"], position_g()
+    info = {it.name: (stock.get(it.name, 0.0), recommend(it, pos.get(it.name, 0.0), today, cal)) for it in ITEMS.values()}
     need = [n for n, (_g, r) in info.items() if r.status in ACTION]
     by_sup: dict = {}
     for it in ITEMS.values():
@@ -395,6 +396,8 @@ def po_auto(leaf: Leaf):
     kpis([("긴급", f"{n['URGENT']}개", None), ("발주 필요", f"{n['ORDER_NOW'] + n['ORDER_SOON']}개", None),
           ("양호", f"{n['OK'] + n['NO_USAGE']}개", None), ("데이터 없음", f"{n['NO_DATA']}개", None)])
     st.caption(f"'{get_store()}' 현재 재고 기준입니다. 실제 재고는 '매장별 재고입력'에서 바꿀 수 있어요.")
+    if note := stock_note():
+        st.info(note, icon=":material/query_stats:")
     st.subheader("우선 처리")
     todo = [(it, g, r) for it, g, r in results if r.status in ACTION]
     if not todo:
@@ -409,9 +412,10 @@ def po_auto(leaf: Leaf):
                    "(상태 순으로 정렬돼 있어요).")
 
     st.subheader("전체 품목 현황")
+    oo = on_order_g()
     df = pd.DataFrame([{
         "상태": STATUS[r.status][0], "품목코드": it.code, "품목": it.name, "분류": it.mid, "거래처": it.supplier.name,
-        "총재고": stock_of(it, g),
+        "총재고": stock_of(it, g), "오는 중 입고": stock_of(it, oo[it.name]) if oo.get(it.name) else "",
         "잔여일": r.days_left, "소진예정": fmt_date(r.stockout_date), "발주예정일": fmt_date(r.order_date),
         "입고예정": fmt_date(r.arrival_date), "추천 수량": qty_of(it, r.order_packs),
         "비고": r.message} for it, g, r in results])
@@ -782,6 +786,8 @@ def stock_editor():
                 st.success(f"{len(imp.grams)}개 품목을 불러왔습니다. 아래 표에서 수정할 수 있습니다.")
 
     st.markdown(f"**실사 재고 입력 · {get_store()}**")
+    if note := stock_note():
+        st.info(note, icon=":material/query_stats:")
     st.caption("BOX·PK·낱개 값을 직접 수정하면 즉시 반영됩니다. 낱개는 품목의 기본단위(g·ml·개·장·롤 등)로 입력하고, "
                "BOX/PK 입수는 품목 마스터 기준으로 자동 환산됩니다.")
     table = s["table"]

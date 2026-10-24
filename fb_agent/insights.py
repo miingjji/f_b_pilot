@@ -5,17 +5,44 @@ from datetime import date, timedelta
 import pandas as pd
 
 import sales_data as sd
+import stock_sim
+from config import TEST_MASTER
 from converter import to_boxes, to_grams
-from data import ITEMS
+from data import ITEMS, ITEMS_BY_CODE
 from errors import InvalidInputError
 from menu import STORES
 from models import StoreCalendar
 from reorder import Recommendation, recommend
 
 
-def master_stock_g() -> dict:
-    """마스터의 현재재고량(품목명 -> 기본단위 수량). 실사 값이 없는 품목은 0 으로 두고, 추천은 입력 전까지 '데이터 없음'으로 본다."""
-    return {name: float(it.current_stock or 0) for name, it in ITEMS.items()}
+def master_stock_g(day: date | None = None) -> dict:
+    """마스터의 현재재고량(품목명 -> 기본단위 수량). 실사 값이 없는 품목은 0 으로 두고, 추천은 입력 전까지 '데이터 없음'으로 본다.
+    day 를 주면 마지막 월말 실사 이후의 재고를 시뮬레이션 값(동결한 재고 예측)으로 바꾼다 — 실사를 더 올리지 않으므로 day 아침의 추정 재고."""
+    stock = {name: float(it.current_stock or 0) for name, it in ITEMS.items()}
+    if day is not None:
+        stock |= sim_stock(day)[0]
+    return stock
+
+
+def sim_stock(day: date) -> tuple[dict, dict | None]:
+    """({품목명: day 아침 예상 재고}, 정보). 테스트 마스터이거나 쓸 예측이 없으면 ({}, None)."""
+    return ({}, None) if TEST_MASTER else stock_sim.sim_stock(day, ITEMS_BY_CODE)
+
+
+def sim_on_order(day: date) -> dict:
+    """{품목명: day 아침 이미 오는 중으로 볼 시뮬레이션 예상 입고(기본단위)}. 테스트 마스터이거나 쓸 예측이 없으면 {}."""
+    return {} if TEST_MASTER else stock_sim.sim_inbound(day, ITEMS_BY_CODE)
+
+
+def sim_stock_note(day: date) -> str:
+    """시뮬레이션 재고임을 알리는 한 줄. 쓸 예측이 없으면 빈 문자열."""
+    info = sim_stock(day)[1]
+    if info is None:
+        return ""
+    f = lambda d: f"{d.month}월 {d.day}일"
+    s = (f"재고는 {f(info['origin'])} 월말 실사에서 {f(info['asof'])} 마감까지 소비·입고를 시뮬레이션한 추정값입니다"
+         f"(품목별 오차 약 31%, 시뮬레이션 {info['items']}개 품목).")
+    return s + (f" 예측이 {f(info['asof'])}에서 끝나 그 뒤 날짜는 같은 값을 씁니다." if info["clamped"] else "") + " 실사 값을 입력하면 그 값을 씁니다."
 
 
 TABLE_COLUMNS = ["품목코드", "품목", "분류", "단위", "BOX", "PK", "낱개"]
