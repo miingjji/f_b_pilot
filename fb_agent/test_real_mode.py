@@ -66,7 +66,15 @@ def render_at(leaf, y, m, d):
     return AppTest.from_string(SIM.format(leaf=leaf, y=y, m=m, d=d), default_timeout=120).run()
 note = lambda at: [i.value for i in at.info if "시뮬레이션" in i.value]
 s_after, s_before, s_input = render_at("po-auto", 2026, 10, 24), render_at("po-auto", 2026, 9, 15), render_at("stock-input", 2026, 10, 24)
-out["sim"] = {"after": note(s_after), "before": note(s_before), "input": note(s_input),
+rows_of = lambda at: max((len(d.value) for d in at.dataframe if "총재고" in d.value.columns), default=0)
+inp = lambda at: [c.value for c in at.caption if "개 표시 / 전체" in c.value]
+rows_default, hidden_caption, input_caption = rows_of(s_after), [c.value for c in s_after.caption if "활동 있는 품목" in c.value], inp(s_input)   # 스위치를 켜기 전 값
+toggle_label = s_after.toggle[0].label
+rows_all = rows_of(s_after.toggle[0].set_value(True).run())                       # 같은 AppTest 가 다시 실행된다 (이후 s_after 는 전체 품목 상태)
+input_caption_all = inp(s_input.toggle[0].set_value(True).run())
+out["sim"] = {"rows_default": rows_default, "rows_all": rows_all, "hidden_caption": hidden_caption, "toggle_label": toggle_label,
+              "input_caption": input_caption, "input_caption_all": input_caption_all, "exc2": [],
+              "after": note(s_after), "before": note(s_before), "input": note(s_input),
               "cols_after": sorted({c for d in s_after.dataframe for c in d.value.columns}),
               "closed_wd": list(s_after.session_state["cfg_closed_wd"]),
               "urgent_after": next((m.value for m in s_after.metric if m.label == "긴급"), None),
@@ -180,6 +188,18 @@ class RealMode(unittest.TestCase):
         self.assertIn("오는 중 입고", r["cols_after"])
         self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에도 같은 안내
         self.assertEqual(r["before"], [])                                                 # 실사 전 날짜에는 안내 없음
+
+    def test_item_lists_show_only_items_with_recent_activity_by_default(self):
+        r = self.r["sim"]
+        self.assertEqual(r["exc2"], [])
+        self.assertIn("입고·청구가 없는 품목도 보기", r["toggle_label"])
+        self.assertEqual(r["rows_all"], CSV_ITEMS)                                        # 스위치를 켜면 전체 품목
+        self.assertTrue(100 <= r["rows_default"] <= 260, r["rows_default"])               # 기본은 활동 있는 품목(약 170개) + 발주가 필요한 품목
+        self.assertEqual(len(r["hidden_caption"]), 1)
+        self.assertIn(f"{r['rows_default']}개만", r["hidden_caption"][0])
+        self.assertEqual(len(r["input_caption"]), 1)
+        self.assertIn("보고 있어요", r["input_caption"][0])                               # 재고 입력도 같은 기본값
+        self.assertTrue(r["input_caption_all"][0].endswith(f"전체 {CSV_ITEMS}개"))        # 켜면 811개 모두, 안내 문구도 없다
 
     def test_po_engine_screen(self):
         r = self.r["engine"]

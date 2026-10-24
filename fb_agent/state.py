@@ -28,6 +28,7 @@ def init_state():
     ss.messages = []
     ss.cfg_today = None                 # None이면 실제 오늘
     ss.cfg_closed_wd = sorted(DEFAULT_CALENDAR.closed_weekdays)
+    ss.cfg_show_dormant = False         # 품목 목록에 최근 45일 입고·청구가 없는 품목도 보일지
     ss.cfg_closed_dates = sorted(d for d in store_calendar.closures() if d >= today - timedelta(days=7))   # 확정 휴점일 (신정·설·추석 전날과 당일, 무매출일, 입력한 휴점일)
     ss.events = []                      # 직접 추가한 일정 (현재 세션에만 저장)
     ss.sel_day = today

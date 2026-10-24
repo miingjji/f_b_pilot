@@ -7,7 +7,7 @@ import pandas as pd
 
 from master import load_master
 from prep.app_master import (MEASURED, NO_DATA, NO_RECENT_RECEIPT, USER_SET, build_app_master, drop_unusable_suppliers, ledger_usage,
-                             match_measured, read_standard_usage, safety_days, user_schedules, write_master, delivery_weekdays, recent_receipt_codes, NO_RECENT_RECEIPT_3M)
+                             match_measured, read_standard_usage, safety_days, user_schedules, write_master, delivery_weekdays, recent_activity_codes, DORMANT)
 
 NA = pd.NA
 ORG_COLS = ["발주처", "원거래처", "품목구분", "계정명", "품목코드_RMS", "품목코드_CK", "품목코드_매장", "품명", "규격", "환산단위", "당월입고수량",
@@ -154,15 +154,18 @@ class AppMaster(unittest.TestCase):
         self.assertEqual((by.loc["F1", "리드타임"], by.loc["F1", "리드타임_출처"]), ("", MEASURED))   # 업체 실측(3)을 그대로 쓰니 품목 값은 비움
         self.assertEqual((by.loc["S1", "리드타임"], by.loc["S1", "리드타임_출처"]), ("", NO_DATA))
 
-    def test_unused_food_items_with_zero_stock_and_no_recent_receipts_have_no_usage(self):
+    def test_dormant_food_items_have_no_usage(self):
         usage_hist = {"F1": (50.0, 50000.0, 7), "F2": (3.0, 3000.0, 2), "S2": (3.0, 3.0, 1)}
-        items, _, info = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist=usage_hist, drop_unscheduled=False, recent={"F1", "S2"})
+        items, _, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist=usage_hist, drop_unscheduled=False, active={"F1", "S2"})
         by = items.set_index("품목코드")
-        self.assertEqual((by.loc["F2", "일소비량"], by.loc["F2", "일소비량_출처"]), (0.0, NO_RECENT_RECEIPT_3M))   # 식재료, 재고 0, 최근 입고 없음
-        self.assertEqual(by.loc["F1", "일소비량_출처"], "수불부 12개월 실적")                                      # 재고가 있거나 최근 입고가 있으면 그대로
+        self.assertEqual((by.loc["F2", "일소비량"], by.loc["F2", "일소비량_출처"]), (0.0, DORMANT))      # 식재료, 최근 45일 입고·청구 없음, 재고 0
+        self.assertEqual(by.loc["F1", "일소비량_출처"], "수불부 12개월 실적")                              # 최근에 입고·청구가 있으면 그대로
         self.assertEqual(by.loc["S2", "일소비량_출처"], "수불부 12개월 실적")
+        # 최근 활동이 없어도 재고가 일 소비량의 3일치보다 많으면 그 재고를 쓰고 있을 수 있어 휴면으로 보지 않는다 (F1 재고 3,000 vs 일 소비 500g × 3 = 1,500)
+        slow, _, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist={"F1": (0.5, 500.0, 7)}, drop_unscheduled=False, active=set())
+        self.assertEqual(slow.set_index("품목코드").loc["F1", "일소비량_출처"], "수불부 12개월 실적")
         none, _, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist=usage_hist, drop_unscheduled=False)
-        self.assertEqual(none.set_index("품목코드").loc["F2", "일소비량_출처"], "수불부 12개월 실적")               # recent 를 주지 않으면 판단하지 않는다
+        self.assertEqual(none.set_index("품목코드").loc["F2", "일소비량_출처"], "수불부 12개월 실적")       # active 를 주지 않으면 판단하지 않는다
 
     def test_suppliers_get_delivery_weekdays_and_only_ck_delivers_on_sunday(self):
         _, sup, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, drop_unscheduled=False, delivery={"CK": "월화수목금토", "대풍농산": "월수금일"})
@@ -235,13 +238,18 @@ class LedgerUsage(unittest.TestCase):
         self.assertNotIn("B", use)                                                                 # 입고가 없으면 소비를 만들지 않는다
         self.assertAlmostEqual(use["C"][0], 5 / days)                                              # 재고가 늘어 음수면 입고량만
 
-    def test_recent_receipt_codes_look_at_the_last_months_only(self):
+    def test_recent_activity_codes_look_at_receipts_and_requests_within_the_window(self):
         root = Path(tempfile.mkdtemp())
-        self.month(root, "2026-01", {"A": 5, "B": 5}, {})
-        self.month(root, "2026-02", {"A": 0, "B": 0}, {})
-        self.month(root, "2026-03", {"A": 0, "B": 4}, {})
-        self.assertEqual(recent_receipt_codes(root, months=2), {"B"})                                 # 최근 2개월(2·3월): B 만
-        self.assertIsNone(recent_receipt_codes(root, months=4))                                       # 수불부가 모자라면 판단하지 않는다
+        for ym, ev in (("2026-08", {"B": 10}), ("2026-09", {"A": 28})):                                # 일자별 입고: B 8월 10일, A 9월 28일
+            d = root / ym[:4] / ym
+            d.mkdir(parents=True)
+            rows = [{"품목코드_RMS": c, **{f"{i}일_수량": (1.0 if i == day else 0.0) for i in range(1, 32)}} for c, day in ev.items()]
+            pd.DataFrame(rows).to_csv(d / "입고내역_정제.csv", index=False, encoding="utf-8-sig")
+        req = root / "req.csv"
+        pd.DataFrame({"청구일자": ["2026-10-20", "2026-09-01", "2026-10-22"], "입고일자": ["2026-10-24", "2026-09-03", "미입고"], "품목코드_RMS": ["D", "E", "C"]}).to_csv(req, index=False)
+        # 자료 끝 = 구매청구 입고일 10-24, 45일 창 = 9-10 ~ 10-24: A(9-28), C(청구 10-22), D(입고 10-24) 만 최근. B(8-10), E(9-01~03)는 아니다
+        self.assertEqual(recent_activity_codes(root, req, days=45), {"A", "C", "D"})
+        self.assertIsNone(recent_activity_codes(Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp()) / "none.csv"))   # 자료가 하나도 없으면 판단하지 않는다
 
     def test_too_few_months_gives_nothing(self):
         root = Path(tempfile.mkdtemp())
