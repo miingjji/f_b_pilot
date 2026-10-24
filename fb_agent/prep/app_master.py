@@ -16,11 +16,12 @@ import argparse
 import calendar
 import math
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
 
+from activity import DORMANT_DAYS, _ledger_dirs, recent_activity_codes  # noqa: F401  (recent_activity_codes 는 여기서도 쓴다)
 from master import ITEM_COLUMNS, SUNDAY_DELIVERY, SUPPLIER_COLUMNS
 from prep.blocks import find_row, label
 from prep.md_tables import read_sheets
@@ -31,7 +32,7 @@ DAYS = 31                                    # 월 일수 기본값 (2025년 12�
 WEEKDAYS = "월화수목금토"
 NO_DATA = "데이터 없음"
 NO_RECENT_RECEIPT = "최근 12개월 입고 없음"
-NO_RECENT_RECEIPT_3M = "최근 3개월 입고 없음(재고 0)"
+DORMANT = "휴면(최근 45일 입고·청구 없음, 재고 거의 없음)"
 USER_SET = "사용자 지정"
 USER_SCHEDULE = Path(__file__).resolve().parent.parent / "data" / "real" / "사용자지정_업체일정.csv"      # 마스터를 다시 만들어도 유지되는 사용자 지정 값
 MEASURED = "구매청구 실측"
@@ -85,27 +86,12 @@ def ledger_usage(ledger: Path | None = None, months: int = USAGE_MONTHS) -> dict
     return out
 
 
-RECENT_MONTHS = 3                            # '요즘 쓰는 품목'을 가르는 최근 월 수
 DELIVERY_MIN_DAYS, DELIVERY_MIN_SHARE = 20, 0.03   # 입고 요일을 정하는 기준: 최근 12개월 입고일이 이만큼 이상인 업체, 입고일의 이 비율 이상인 요일
 WEEKDAYS = "월화수목금토일"
 USER_DELIVERY = "사용자 지정(일요일 입고는 CK만)"
 
 
-def _ledger_dirs(ledger: Path | None, months: int) -> list[Path]:
-    ledger = ledger or Path(__file__).resolve().parent.parent / "data" / "cleaned" / "수불부"
-    return sorted(p for p in ledger.glob("20??/20??-??") if (p / "입고내역_정제.csv").exists())[-months:]
-
-
-def recent_receipt_codes(ledger: Path | None = None, months: int = RECENT_MONTHS) -> set | None:
-    """최근 months 개월 안에 입고가 있었던 품목의 RMS 코드. 수불부가 months 개월보다 적으면 None (판단하지 않는다)."""
-    dirs = _ledger_dirs(ledger, months)
-    if len(dirs) < months:
-        return None
-    out = set()
-    for p in dirs:
-        d = pd.read_csv(p / "입고내역_정제.csv", encoding="utf-8-sig", dtype={"품목코드_RMS": str}, usecols=["품목코드_RMS", "당월합계_수량", "당월합계_중량_g"])
-        out |= set(d.loc[(d["당월합계_수량"] > 0) | (d["당월합계_중량_g"] > 0), "품목코드_RMS"])
-    return out
+DORMANT_STOCK_DAYS = 3                       # 거기에 재고가 일 소비량의 이 일수 이하로 거의 없으면 휴면 (재고가 남아 있으면 그 재고를 쓰고 있을 수 있다)
 
 
 def delivery_weekdays(ledger: Path | None = None, months: int = USAGE_MONTHS) -> dict:
@@ -237,7 +223,7 @@ def _delivery_cols(name: str, delivery: dict | None) -> dict:
 
 
 def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataFrame, days: int = DAYS, measured: dict | None = None, usage_hist: dict | None = None, user: dict | None = None, drop_unscheduled: bool = True,
-                     recent: set | None = None, delivery: dict | None = None):
+                     active: set | None = None, delivery: dict | None = None):
     """(품목 표, 업체 표, 요약). 품목 표는 master.py 가 읽는 형식 + 출처 열. measured 는 measured_suppliers() 결과, user 는 user_schedules() 결과."""
     measured = measured or {}
     user = user or {}
@@ -269,8 +255,9 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
         months_used = hist[2] if hist is not None else 0
 
         stock_src = "실사재고"
-        if recent is not None and usage and stock == 0 and r["품목구분"] != "소모품" and r["품목코드_RMS"] != "없음" and r["품목코드_RMS"] not in recent:   # 식재료: 실사 재고가 0이고 최근 3개월 입고가 없다 = 지금은 쓰지 않는 품목(업체 변경·시즌 종료·단종). 소모품은 0이 세지 않은 것일 수 있어 따로 둔다
-            usage, usage_src, months_used = 0.0, NO_RECENT_RECEIPT_3M, 0
+        if (active is not None and usage and r["품목구분"] != "소모품" and r["품목코드_RMS"] != "없음" and r["품목코드_RMS"] not in active
+                and stock <= DORMANT_STOCK_DAYS * usage):   # 식재료: 최근 45일 입고·청구가 없고 재고도 거의 없다 = 지금은 쓰지 않는 품목(업체 변경·시즌 종료·단종). 소모품은 0이 세지 않은 것일 수 있어 따로 둔다
+            usage, usage_src, months_used = 0.0, DORMANT, 0
         if r["품목구분"] == "소모품" and stock == 0 and usage:      # 쓰는 소모품이 실사에서 0으로만 잡혀 있으면 세지 않은 것: 재고를 모른다
             stock, stock_src = None, NO_DATA
 
@@ -311,7 +298,7 @@ def build_from_markdown(src, ledger_history: bool = True):
     tables, _ = build_all(src, sheets=sheets)
     return build_app_master(tables["업체별_품목"], tables["업체_마스터"], read_standard_usage(sheets[SHEET_STD]), days_in_source(src),
                             measured_suppliers(), ledger_usage() if ledger_history else None, user_schedules(),
-                            recent=recent_receipt_codes() if ledger_history else None, delivery=delivery_weekdays() if ledger_history else None)
+                            active=recent_activity_codes() if ledger_history else None, delivery=delivery_weekdays() if ledger_history else None)
 
 
 README = """# 실제 데이터 기반 앱 마스터
@@ -325,7 +312,7 @@ README = """# 실제 데이터 기반 앱 마스터
 | 품목·규격·업체·재고(식재료) | 정리된 실사재고·입고내역 | |
 | 일 소비량 | `수불부 12개월 실적`(12개월 입고 + 기초 실사재고 − 기말 실사재고) ÷ 일수, 없으면 `표준사용량`, 그다음 `입고 기반 추정` | 12개월 동안 입고가 없으면 소비 0 (`최근 12개월 입고 없음`) |
 | 현재 재고 | `실사재고` | 쓰는 소모품이 실사에서 0으로만 잡혀 세지 않은 것이면 비움 |
-| 지금 쓰는 식재료 | 식재료인데 실사 재고가 0이고 최근 3개월 입고가 없으면 소비 0 (`최근 3개월 입고 없음(재고 0)`) — 업체 변경·시즌 종료·단종 | 입고가 다시 생기면 다음에 마스터를 만들 때 살아난다 |
+| 지금 쓰는 식재료 | 식재료인데 최근 45일(수불부 입고일·구매청구 자료 끝 기준) 입고도 구매청구도 없고 마지막 실사 재고가 일 소비량의 3일치 이하이면 소비 0 (`휴면(최근 45일 입고·청구 없음, 재고 거의 없음)`) — 업체 변경·시즌 종료·단종 | 입고나 청구가 다시 생기면 다음에 마스터를 만들 때 살아난다 (구매청구·수불부를 새로 받으면 `python -m prep.app_master`) |
 | 업체 입고 요일 | `수불부 입고 실적`(최근 12개월 일자별 입고에서 입고일의 3% 이상인 요일, 입고일 20일 이상인 업체). 일요일 입고는 CK만 한다(사용자 확인) | 실적이 모자라면 월~토 (`사용자 지정(일요일 입고는 CK만)`) |
 | 안전 재고 | 정책 값: 일 소비량 × 안전 일수(리드타임 동안 매출이 예측보다 클 위험 95%를 덮는 일수, 1~2일) | 리드타임이 없으면 비움 |
 | 리드타임 | `사용자 지정`(`사용자지정_업체일정.csv`), 품명 태그(수불부), `구매청구 실측`(2024~2026 청구→입고 일수 90분위, 청구 10건 이상 업체) | 비움 |

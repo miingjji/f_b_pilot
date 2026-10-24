@@ -5,11 +5,13 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+import activity
 import inventory_sim
 import sales_data
 import reorder_engine
 import stock_sim
 import store_calendar
+from config import TEST_MASTER
 from converter import parse_count
 from data import ITEMS, SUPPLIERS
 from errors import InvalidInputError
@@ -47,6 +49,35 @@ def current_results():
     today, cal = get_today(), get_calendar()
     out = [(ITEMS[n], g, recommend(ITEMS[n], pos[n], today, cal)) for n, g in stock.items() if n in ITEMS]     # 판단은 재고 + 이미 오는 중인 입고
     return sorted(out, key=lambda x: STATUS_ORDER[x[2].status])
+
+
+@st.cache_data(show_spinner=False)
+def _active_codes(stamp: float) -> frozenset:
+    return frozenset(activity.recent_activity_codes() or ())
+
+
+def active_codes() -> frozenset | None:
+    """최근 45일 안에 입고·구매청구가 있었던 품목코드. 테스트 마스터이거나 활동 자료가 없으면 None (거르지 않는다)."""
+    if TEST_MASTER:
+        return None
+    return _active_codes(activity.stamp()) or None
+
+
+def dormant_toggle(key: str) -> bool:
+    """'활동 없는 품목도 보기' 스위치. 선택은 화면을 옮겨도 유지한다(cfg_show_dormant)."""
+    on = st.toggle(f"최근 {activity.DORMANT_DAYS}일 입고·청구가 없는 품목도 보기", value=ss.get("cfg_show_dormant", False), key=key,
+                   help=f"기본은 최근 {activity.DORMANT_DAYS}일 안에 입고나 구매청구가 있었던 품목과 발주가 필요한 품목만 보여줍니다. 몇 달에 한 번 사는 집기·유니폼, 쓰지 않는 품목은 숨겨져요.")
+    ss.cfg_show_dormant = on
+    return on
+
+
+def only_active(results, show_all: bool):
+    """(품목, 재고, 추천) 목록에서 활동 있는 품목(또는 발주가 필요한 품목)만. (남긴 목록, 숨긴 개수)."""
+    codes = active_codes()
+    if show_all or codes is None:
+        return results, 0
+    keep = [(it, g, r) for it, g, r in results if it.code in codes or r.status in ACTION]
+    return keep, len(results) - len(keep)
 
 
 def add_stock(item: str, packs: float):
@@ -393,11 +424,14 @@ def po_leadtime(leaf: Leaf):
 
 @register("po.auto")
 def po_auto(leaf: Leaf):
-    results = current_results()
+    show_all = dormant_toggle("po_auto_dormant")
+    results, hidden = only_active(current_results(), show_all)
     n = {s: sum(r.status == s for _, _, r in results) for s in STATUS}
     kpis([("긴급", f"{n['URGENT']}개", None), ("발주 필요", f"{n['ORDER_NOW'] + n['ORDER_SOON']}개", None),
           ("양호", f"{n['OK'] + n['NO_USAGE']}개", None), ("데이터 없음", f"{n['NO_DATA']}개", None)])
     st.caption(f"'{get_store()}' 현재 재고 기준입니다. 실제 재고는 '매장별 재고입력'에서 바꿀 수 있어요.")
+    if hidden:
+        st.caption(f":material/visibility_off: 활동 있는 품목 {len(results)}개만 보고 있어요. 숨긴 품목 {hidden}개는 최근 {activity.DORMANT_DAYS}일 입고·청구가 없고 발주도 필요 없는 품목이에요 (위 스위치로 볼 수 있어요).")
     if note := stock_note():
         st.info(note, icon=":material/query_stats:")
     st.subheader("우선 처리")
@@ -830,15 +864,19 @@ def stock_editor():
     mask = pd.Series(True, index=table.index)
     if cat != "전체":
         mask &= table["분류"] == cat
+    codes = active_codes()
+    show_all = dormant_toggle("stock_input_dormant")
     if q:
-        mask &= table["품목"].str.contains(q, case=False, regex=False) | table["품목코드"].str.contains(q, case=False, regex=False)
+        mask &= table["품목"].str.contains(q, case=False, regex=False) | table["품목코드"].str.contains(q, case=False, regex=False)    # 검색하면 활동 없는 품목도 찾는다
+    elif codes is not None and not show_all:
+        mask &= table["품목코드"].isin(codes)
     view = table[mask]
     edited = st.data_editor(view, hide_index=True, disabled=["품목코드", "품목", "분류", "단위"], width="stretch",
                             key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}", alt="품목별 실사 재고 입력 표")
     t = table.copy()   # 보이는 행의 수정값만 전체 표에 반영 (필터로 가려진 행은 그대로)
     t.loc[edited.index, ["BOX", "PK", "낱개"]] = edited[["BOX", "PK", "낱개"]]
     s["table"] = t
-    st.caption(f"{len(view)}개 표시 / 전체 {len(table)}개")
+    st.caption(f"{len(view)}개 표시 / 전체 {len(table)}개" + (f" — 최근 {activity.DORMANT_DAYS}일 입고·청구가 있었던 품목만 보고 있어요 (위 스위치나 검색으로 나머지도 볼 수 있어요)" if codes is not None and not show_all and not q else ""))
 
     today, cal = get_today(), get_calendar()
     stock, errors = stock_from_table(t)
@@ -890,7 +928,10 @@ def stock_history(leaf: Leaf):
 
 @register("stock.forecast")
 def stock_forecast(leaf: Leaf):
-    results = current_results()
+    show_all = dormant_toggle("stock_forecast_dormant")
+    results, hidden = only_active(current_results(), show_all)
+    if hidden:
+        st.caption(f":material/visibility_off: 활동 있는 품목 {len(results)}개만 보고 있어요 (숨긴 품목 {hidden}개).")
     rows = [{"품목코드": it.code, "품목": it.name, "분류": it.mid, "재고": stock_of(it, g), "일 소비": stock_of(it, it.daily_usage_g) if it.usage_known else None,
              "안전재고": stock_of(it, safety_stock(it)) if it.usage_known else None,
              "소진율(%/일)": round(it.daily_usage_g / g * 100, 1) if g and it.usage_known else None,
