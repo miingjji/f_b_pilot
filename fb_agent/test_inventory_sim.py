@@ -72,6 +72,20 @@ class Fit(unittest.TestCase):
         self.assertTrue(f.loc["A", "w1"])
         self.assertTrue(f.loc["B", "w6"])                            # CK 는 일요일에도 입고
 
+    def test_level_starts_when_the_item_is_first_used(self):
+        # 1·2월에는 재고도 입고도 없다가 3월부터 쓰기 시작: 평소 수준은 쓰기 전의 0 을 빼고 본다 (기존: 0·0·8·6 의 중앙값 3, 이제: 8·6 의 중앙값 7)
+        L = ledger({"A": [0, 0, 8, 6]}, {"A": [0, 0, 10, 10]}, {"A": [(date(2026, 4, 7), 10.0)]})
+        self.assertEqual(sim.fit_items(L, "2026-04", Plan(), sim.Params(level_since_start=False)).loc["A", "level"], 3.0)
+        self.assertEqual(sim.fit_items(L, "2026-04", Plan(), sim.Params()).loc["A", "level"], 7.0)
+
+    def test_item_with_no_consumption_last_month_stops(self):
+        # 2·3월에는 소비가 있었지만 4월(출발 달)에는 0: 끝난 시즌 품목으로 보고 소비 0
+        L = ledger({"A": [10, 10, 10, 10], "B": [10, 10, 10, 6]}, {"A": [0, 10, 10, 0], "B": [0, 10, 10, 6]})
+        f = sim.fit_items(L, "2026-04", Plan(), sim.Params(k_rate=3))
+        self.assertEqual(f.loc["A", "rate"], 0.0)
+        self.assertGreater(f.loc["B", "rate"], 0.0)
+        self.assertGreater(sim.fit_items(L, "2026-04", Plan(), sim.Params(k_rate=3, stop_if_last_zero=False)).loc["A", "rate"], 0.0)
+
     def test_data_after_the_origin_is_not_used(self):
         L = ledger({"A": [10, 10, 10, 50]}, {"A": [0, 10, 10, 90]}, {"A": [(date(2026, 4, 7), 90.0)]})
         f = sim.fit_items(L, "2026-03", Plan(), sim.Params(k_rate=3))

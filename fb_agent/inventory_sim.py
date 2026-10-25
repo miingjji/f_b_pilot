@@ -120,6 +120,8 @@ class Params:
     k_event: int = 3         # 입고 습관(요일·단위)을 보는 최근 개월 수
     active_days: int = 45    # 출발일 이전 이 일수 안에 입고가 한 번도 없으면 쓰는 품목으로 보지 않는다 (백테스트: 입고 있다고 잘못 본 품목 67→41개, 놓친 품목 21→28개, 전체 입고 WAPE 29.2→28.6%)
     k_level: int = 12        # 평소 재고 수준을 보는 최근 개월 수 (길게 봐야 입고 주기 한 바퀴가 다 들어간다)
+    stop_if_last_zero: bool = True   # 출발 직전 달 소비가 0이면 그 품목은 소비 0으로 본다 (끝난 시즌·단종 품목. 백테스트: 월 입고 WAPE 24.4→23.8%, 월 소비 22.0→21.4%)
+    level_since_start: bool = True   # 평소 재고 수준을 처음 쓰기 시작한 달부터 본다 (쓰기 전의 0이 중앙값을 끌어내리지 않게)
     level: str = "median"    # 평소 재고 수준: 월말 실사의 중앙값 | 평균
     day_share: float = 0.1   # 이 비율 이상의 입고가 있었던 요일을 입고 요일로 본다 (너무 좁히면 입고가 막혀 재고가 줄어든다)
     round_at: float = 0.5    # lumps="round" 에서 평소 입고 단위의 이만큼 모자라면 한 단위를 들여온다 (0.5 = 반올림)
@@ -134,8 +136,14 @@ def fit_items(L: Ledger, origin: str, plan: SalesPlan, p: Params) -> pd.DataFram
     hm = ms[-p.k_rate:]
     hm = [m for m in hm if m in cons.columns]
     rate = cons[hm].clip(lower=0).sum(axis=1) / float(sales.reindex(hm).sum())
+    if p.stop_if_last_zero and origin in cons.columns:
+        rate = rate.where(cons[origin].clip(lower=0) > 0, 0.0)
     lvl_m = ms[-p.k_level:]
-    level = L.counts[lvl_m].median(axis=1) if p.level == "median" else L.counts[lvl_m].mean(axis=1)
+    lc = L.counts[lvl_m]
+    if p.level_since_start:
+        used = ((L.counts[lvl_m] > 0) | (L.receipts[lvl_m] > 0)).cummax(axis=1)
+        lc = lc.where(used)
+    level = lc.median(axis=1) if p.level == "median" else lc.mean(axis=1)
     start = month_end(add_month(origin, -p.k_event)) + timedelta(days=1)
     rows = {}
     for k, ev in L.daily.items():

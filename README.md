@@ -31,7 +31,7 @@ pip install -r requirements.txt
 브라우저에서 `http://localhost:8501`을 엽니다. `data/real/`에 실제 데이터 기반 마스터(품목 811개·거래처)가 들어 있어 별도 준비 없이 실제 데이터로 뜹니다. 근거가 없는 값은 가상으로 채우지 않고 `데이터 없음`으로 표시합니다.
 
 ```bash
-python -m unittest discover -p "test_*.py"     # 단위·화면(AppTest) 테스트 387개, 약 80초
+python -m unittest discover -p "test_*.py"     # 단위·화면(AppTest) 테스트 389개, 약 80초
 python inventory_sim.py --backtest             # 재고·입고 시뮬레이션 백테스트 (2025-07 이후 매월 출발)
 python inventory_sim.py --verify 2026-10       # 동결한 예측과 실제 수불부 비교 (2026년 10월 수불부가 있을 때)
 python reorder_engine.py --fit 시작 끝          # 발주 확률 모델 재학습
@@ -67,7 +67,9 @@ python reorder_engine.py --fit 시작 끝          # 발주 확률 모델 재학
 
 **최근 개선 사례:** 시뮬레이션이 쓰지 않는 품목을 쓴다고 보던 문제를 백테스트로 확인했습니다. 출발일 45일 안에 입고가 없으면 제외하는 기준을 넣었더니 잘못 본 품목이 67개에서 41개로 줄었고 입고 WAPE는 29.2%에서 28.6%로 약간 좋아졌습니다. 효과가 작다는 점도 그대로 적어 두었습니다.
 
-- 자동 테스트 387개 통과 (`test_inventory_sim.py`, `test_reorder_engine.py`, `test_sales_forecast.py`, `test_stock_sim.py` 등)
+**두 가지 보정을 더 넣었습니다.** 평소 재고 수준을 '처음 쓰기 시작한 달'부터 계산하고(새 품목의 0이 기준을 끌어내리던 문제), 출발 직전 달 소비가 0인 품목은 소비 0으로 봅니다(끝난 시즌 품목). 월 입고 WAPE는 24.4%에서 23.8%로, 월말 재고는 30.4%에서 약 29.8%로 좋아졌습니다. 기간·요일 기준 등 다른 모수 11가지는 이미 최적에 가까워 바꾸지 않았습니다.
+
+- 자동 테스트 389개 통과 (`test_inventory_sim.py`, `test_reorder_engine.py`, `test_sales_forecast.py`, `test_stock_sim.py` 등)
 - 커밋 이력: `git log`의 기능별 브랜치 머지 (`feat/inventory-sim`, `feat/order-plan`, `fix/urgent-items`, `feat/oct-po-data` 등)
 - 동결 예측과 검증 CSV: `fb_agent/data/forecast/`
 - 방법·수치 문서: `fb_agent/docs/INVENTORY_SIM.md`, `DATA_CLEANING.md`, `LEDGER_RECONCILE.md`
