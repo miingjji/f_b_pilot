@@ -118,6 +118,7 @@ class SalesPlan:
 class Params:
     k_rate: int = 3          # 소비 속도를 보는 최근 개월 수 (백테스트: 짧을수록 좋았다. 소비는 최근 달이 가장 닮는다)
     k_event: int = 3         # 입고 습관(요일·단위)을 보는 최근 개월 수
+    active_days: int = 45    # 출발일 이전 이 일수 안에 입고가 한 번도 없으면 쓰는 품목으로 보지 않는다 (백테스트: 입고 있다고 잘못 본 품목 67→41개, 놓친 품목 21→28개, 전체 입고 WAPE 29.2→28.6%)
     k_level: int = 12        # 평소 재고 수준을 보는 최근 개월 수 (길게 봐야 입고 주기 한 바퀴가 다 들어간다)
     level: str = "median"    # 평소 재고 수준: 월말 실사의 중앙값 | 평균
     day_share: float = 0.1   # 이 비율 이상의 입고가 있었던 요일을 입고 요일로 본다 (너무 좁히면 입고가 막혀 재고가 줄어든다)
@@ -139,7 +140,7 @@ def fit_items(L: Ledger, origin: str, plan: SalesPlan, p: Params) -> pd.DataFram
     rows = {}
     for k, ev in L.daily.items():
         ev = [(d, q) for d, q in ev if start <= d <= month_end(origin)]
-        if not ev:
+        if not ev or (month_end(origin) - max(d for d, _ in ev)).days > p.active_days:
             continue
         w = np.zeros(7)
         for d, _ in ev:
