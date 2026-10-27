@@ -133,7 +133,7 @@ def rec_card(item, g, r, *, request_button=False):
             st.metric("추천 수량", qty_of(item, r.order_packs), delta_color="off", delta_arrow="off", border=True)
         if request_button and r.status in ACTION:
             st.button("구매청구 만들기", key=f"mkreq_{item.name}", icon=":material/add_shopping_cart:",
-                      on_click=add_request, args=(item.name, r.order_packs, r.arrival_date, "자동 발주 추천"))
+                      on_click=request_and_open, args=(item.name, r.order_packs, r.arrival_date, "자동 발주 추천"))
 
 
 # ---------------- 발주관리 ----------------
@@ -164,6 +164,12 @@ def add_request(item: str, packs: float, want: date | None, memo: str, toast: bo
         st.toast(f"구매청구를 만들었어요: {item} {qty_for(item, packs)}", icon=":material/check_circle:")
 
 
+def request_and_open(item: str, packs: float, want: date | None, memo: str):
+    """한 품목을 구매청구로 만들고 청구 목록 창을 바로 연다."""
+    add_request(item, packs, want, memo, toast=False)
+    open_req_list()
+
+
 def add_requests_bulk(todo):
     """우선 처리 품목 전체를 한 번에 구매청구로 (이미 청구한 품목은 건너뜀)."""
     pending = {r["품목"] for r in ss.purchase_requests if r["상태"] == "청구"}
@@ -173,6 +179,7 @@ def add_requests_bulk(todo):
             add_request(it.name, r.order_packs, r.arrival_date, "자동 발주 추천", toast=False)
             made += 1
     st.toast(f"구매청구 {made}건을 만들었어요 (이미 청구한 {len(todo) - made}건은 건너뜀).", icon=":material/check_circle:")
+    open_req_list()
 
 
 def convert_to_po(req_no: str, toast: bool = True):
@@ -345,9 +352,19 @@ def req_item_card(it, g, r):
                   type="primary" if in_cart else "secondary", width="stretch", on_click=cart_add, args=(it.name,))
 
 
+def req_list_button(key: str):
+    """청구 목록 창을 다시 여는 작은 버튼. 대기 중인 청구가 있으면 건수를 함께 보여 준다."""
+    n, waiting = len(ss.purchase_requests), sum(r["상태"] == "청구" for r in ss.purchase_requests)
+    st.button(f"청구 목록 보기 ({n}건" + (f" · 전환 대기 {waiting}건" if waiting else "") + ")", key=key, type="primary" if waiting else "secondary",
+              icon=":material/list_alt:", width="stretch", disabled=not n, on_click=open_req_list, help="등록한 청구를 업체별로 확인하고, 지금 발주할 것만 골라 발주서로 전환합니다.")
+
+
 @register("po.request")
 def po_request(leaf: Leaf):
-    st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. 등록하면 청구 목록 창이 바로 열려 업체별로 확인한 뒤 발주서로 전환해요.")
+    c_cap, c_open = st.columns([5, 2], gap="medium", vertical_alignment="center")    # 아래 본문·청구 패널과 같은 열 비율 → 버튼 폭이 패널과 같다
+    with c_open:
+        req_list_button("open_req_list")
+    c_cap.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. 등록하면 청구 목록 창이 바로 열려 업체별로 확인한 뒤 발주서로 전환해요.")
     today, cal = get_today(), get_calendar()
     stock, pos = inv_state()["stock_g"], position_g()
     info = {it.name: (stock.get(it.name, 0.0), recommend(it, pos.get(it.name, 0.0), today, cal)) for it in ITEMS.values()}
@@ -360,7 +377,7 @@ def po_request(leaf: Leaf):
 
     main, side = st.columns([5, 2], gap="medium")
     with main:
-        st.markdown("##### 1. 거래처")
+        st.markdown("##### 거래처")
         names = list(labels)
         if ss.get("req_supplier") not in labels:
             ss.req_supplier = names[0]
@@ -387,7 +404,7 @@ def po_request(leaf: Leaf):
             ss.req_sig, ss.req_page = sig, 0
         pages = max(1, -(-len(items) // REQ_PAGE))
         page = min(ss.get("req_page", 0), pages - 1)
-        st.markdown(f"##### 2. 품목 ({len(items)}개)")
+        st.markdown(f"##### 품목 ({len(items)}개)")
         if not items:
             st.info("조건에 맞는 품목이 없습니다. 검색어나 분류를 바꿔 보세요.", icon=":material/search_off:")
         shown = items[page * REQ_PAGE:(page + 1) * REQ_PAGE]
@@ -405,7 +422,7 @@ def po_request(leaf: Leaf):
     with side:
         with st.container(border=True, key="req-cart"):                      # 스크롤해도 따라오게 style.py 에서 고정
             cart = _cart()
-            st.markdown(f"##### 3. 청구 목록 ({len(cart)})")
+            st.markdown(f"##### 청구 목록 ({len(cart)})")
             if not cart:
                 st.caption("카드에서 '담기'를 누르면 여기에 쌓여요. 거래처별 발주일 · 입고일도 여기서 정해요.")
             for sup in sorted({ITEMS[n].supplier.name for n in cart}):
@@ -434,6 +451,7 @@ def po_request(leaf: Leaf):
 @register("po.request_detail")
 def po_request_detail(leaf: Leaf):
     reqs = ss.purchase_requests
+    req_list_button("open_req_list_detail")
     kpis([("전체 청구", f"{len(reqs)}건", None), ("발주 전환", f"{sum(r['상태'] == '발주완료' for r in reqs)}건", None),
           ("대기", f"{sum(r['상태'] == '청구' for r in reqs)}건", None)])
     if not reqs:
@@ -485,7 +503,7 @@ def rec_row(item, g, r):
         c_when.markdown(f"{fmt_date(r.order_date)} 발주 → {fmt_date(r.arrival_date)} 입고" + (f"  \n:gray[잔여 {r.days_left:.1f}일 · 소진 {fmt_date(r.stockout_date)}]" if r.days_left is not None else ""))
         c_qty.markdown(f"추천 **{qty_of(item, r.order_packs)}**")
         c_btn.button("구매청구 만들기", key=f"mkreq_{item.name}", icon=":material/add_shopping_cart:", width="stretch",
-                     on_click=add_request, args=(item.name, r.order_packs, r.arrival_date, "자동 발주 추천"))
+                     on_click=request_and_open, args=(item.name, r.order_packs, r.arrival_date, "자동 발주 추천"))
 
 
 @register("po.auto")
@@ -602,6 +620,7 @@ def add_engine_requests(reqs: list):
             pending.add(q["item"])
             made += 1
     st.toast(f"구매청구 {made}건을 만들었어요 (이미 청구한 {len(reqs) - made}건은 건너뜀).", icon=":material/check_circle:")
+    open_req_list()
 
 
 @register("po.engine")

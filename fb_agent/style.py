@@ -71,6 +71,9 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT}; background:
 /* ---- 구매청구 화면의 청구 목록은 스크롤해도 따라온다 ---- */
 [data-testid="stColumn"]:has(.st-key-req-cart) {{ position: sticky; top: 4rem; align-self: flex-start; }}
 
+/* 청구 목록 보기: 전환 대기 건을 놓치지 않도록 크게 */
+.st-key-open_req_list button, .st-key-open_req_list_detail button {{ min-height: 3.2rem; font-size: 1.05rem; }}
+
 /* ---- 버튼 ---- */
 .stMainBlockContainer button[kind="primary"] {{ box-shadow: none; font-weight: 600; letter-spacing: -0.005em; }}
 .stMainBlockContainer button[kind="secondary"] {{ border-color: {LINE}; background: {SURFACE}; }}
