@@ -94,7 +94,7 @@ views.render(get_leaf("po-engine"))
 '''
 def render_engine(y, m, d):
     return AppTest.from_string(ENGINE.format(y=y, m=m, d=d), default_timeout=300).run()
-a1, a2, a3 = render_engine(2026, 10, 1), render_engine(2026, 10, 21), render_engine(2026, 10, 4)
+a1, a2, a3 = render_engine(2026, 10, 1), render_engine(2026, 10, 30), render_engine(2026, 10, 4)
 btn = [b for b in a1.button if b.label.startswith("구매청구 만들기")]
 n0 = len(a1.session_state["purchase_requests"])
 made = a2_ = None
@@ -113,9 +113,9 @@ out["engine"] = {
     "exc": [e.message[:200] for at in (a1, a2, a3) for e in at.exception],
     "orders_rows": sum(len(d.value) for d in a1.dataframe),
     "sup_cards": len([b for b in a1.button if b.key and b.key.startswith("po_engine_req_")]),
-    "kpis": [m.label for m in a1.metric],
+    "orders_header": [h.value for h in a1.subheader if h.value.startswith("오늘 발주 추천")],
     "plan_expander": [any("앞으로 2주 발주 예정" in x.label for x in at.expander) for at in (a1, a2)],
-    "sim_caption": [any("시뮬레이션 재고를 참고로" in c.value for c in at.caption) for at in (a1, a2)],
+    "sim_caption": [any("시뮬레이션 재고를 참고로" in x.label for x in at.expander) for at in (a1, a2)],
     "warn_ok": len(a1.warning), "warn_stale": len(a2.warning), "sunday_success": len(a3.success),
     "download": [b.label for b in a1.get("download_button")] if hasattr(a1, "get") else [],
 }
@@ -206,11 +206,11 @@ class RealMode(unittest.TestCase):
         self.assertEqual(r["exc"], [])
         self.assertGreaterEqual(r["orders_rows"], 10)                                  # 2026-10-01(목) 에는 실제 추천이 여러 건
         self.assertGreaterEqual(r["sup_cards"], 2)                                     # 거래처마다 카드와 '이 업체 청구' 버튼
-        self.assertEqual(r["kpis"], ["발주 추천", "거래처", "시즌 시작 예상", "재고 확인 필요"])
+        self.assertRegex(r["orders_header"][0], r"오늘 발주 추천 \((\d+)건\)")
         self.assertEqual(r["plan_expander"], [True, True])                              # 발주일 예측(시뮬레이션)이 있는 날짜에는 '앞으로 2주 발주 예정'
-        self.assertEqual(r["sim_caption"], [False, True])                                # 10-01 은 실사 후 14일 안(실사 추정), 10-21 은 시뮬레이션 재고를 참고로
+        self.assertEqual(r["sim_caption"], [False, True])                                # 10-01 은 실사 후 14일 안(실사 추정), 10-30 은 시뮬레이션 재고를 참고로
         self.assertEqual(r["warn_ok"], 0)                                              # 자료 끝 3일 안이면 경고 없음
-        self.assertEqual(r["warn_stale"], 1)                                           # 자료가 끝난 뒤(10-21)에는 경고
+        self.assertEqual(r["warn_stale"], 1)                                           # 구매청구 자료(10-24)가 끝난 지 3일을 넘은 10-30 에는 경고
         self.assertEqual(r["sunday_success"], 1)                                       # 일요일은 발주일이 아니라는 안내
         self.assertEqual(len(r["download"]), 1)
 

@@ -523,41 +523,50 @@ def add_engine_requests(reqs: list):
 
 @register("po.engine")
 def po_engine(leaf: Leaf):
-    st.caption("거래처 청구·입고 이력(2024~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
-               "월말 실사재고(수불부)가 있으면 재고를 추정해 참고로 보여 주고, 주문 간격이 길어 습관으로 판단할 수 없는 품목은 재고로 판단합니다.")
     has_data = (reorder_engine.DATA / "2026" / "구매청구_정제.csv").exists()
     if get_store() != sales_data.STORE or not has_data:
         st.info(f"이력 기반 발주 추천은 실제 청구·입고 이력이 있는 '{sales_data.STORE}'에서만 제공합니다.", icon=":material/info:")
         return
     stamp = _engine_stamp()
     e = _engine(stamp)
-    day = st.date_input("기준일 (발주하는 날)", value=get_today(), key="po_engine_day")
-    if day > e.last + timedelta(days=3):
-        st.warning(f"매출·발주 자료가 {e.last:%Y-%m-%d}까지라, {(day - e.last).days}일 뒤 날짜는 최근 주문 이력이 빠져 결과가 부정확합니다. "
+    c_day, c_state = st.columns([3, 7], vertical_alignment="bottom")
+    day = c_day.date_input("기준일 (발주하는 날)", value=get_today(), key="po_engine_day")
+    if day > e.data_end + timedelta(days=3):
+        st.warning(f"구매청구 자료가 {e.data_end:%Y-%m-%d}까지라, {(day - e.data_end).days}일 뒤 날짜는 최근 주문 이력이 빠져 결과가 부정확합니다. "
                    "구매청구·일자별 매출을 갱신한 뒤 모델을 다시 학습해 주세요 (python reorder_engine.py --fit).", icon=":material/warning:")
     status, why = store_calendar.status(day)
     if status != "영업":
         st.caption(f":material/event: {day:%m/%d} {status}{f' · {why}' if why else ''}")
     t = _engine_table(day, stamp)
     counted = e.latest_count(day)
+    n_ref = int(t["재고"].notna().sum())
     if counted is None:
-        st.caption(":material/inventory_2: 재고 반영 없음 — 월말 실사재고 자료가 없습니다.")
+        stock_line, stock_more = "재고 반영 없음 — 월말 실사재고 자료가 없습니다.", ""
+    elif (day - counted).days > reorder_engine.STALE_DAYS and n_ref:
+        stock_line = f"재고는 실사 대신 시뮬레이션 재고를 참고로 보여 줍니다 ({n_ref}개 품목)"
+        stock_more = (f"최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 실사 추정 대신 시뮬레이션 재고를 참고로 보여 줍니다. "
+                      "발주할 시점 판단에는 쓰지 않고 '재고 넉넉' 주의와 '재고 확인' 품목의 근거에만 씁니다 (시뮬레이션 재고로 판정하면 맞은 비율이 낮아서).")
     elif (day - counted).days > reorder_engine.STALE_DAYS:
-        n_ref = int(t["재고"].notna().sum())
-        if n_ref:
-            st.caption(f":material/inventory_2: 최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 실사 추정 대신 시뮬레이션 재고를 참고로 보여 줍니다 ({n_ref}개 품목). "
-                       "발주할 시점 판단에는 쓰지 않고 '재고 넉넉' 주의와 '재고 확인' 품목의 근거에만 씁니다 (시뮬레이션 재고로 판정하면 맞은 비율이 낮아서).")
-        else:
-            st.caption(f":material/inventory_2: 최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 재고 추정은 쓰지 않았습니다 "
-                       f"(실사 후 {reorder_engine.STALE_DAYS}일 안에만 반영). 시뮬레이션 예측이 없는 날짜입니다.")
+        stock_line = f"재고 추정은 쓰지 않았어요 (최근 월말 실사 {counted:%Y-%m-%d}, {(day - counted).days}일 전)"
+        stock_more = f"실사 후 {reorder_engine.STALE_DAYS}일 안에만 반영합니다. 시뮬레이션 예측이 없는 날짜입니다."
     else:
-        st.caption(f":material/inventory_2: {counted:%Y-%m-%d} 월말 실사 + 그 뒤 입고 − 예상 소비로 재고를 추정했습니다 ({int(t['재고'].notna().sum())}개 품목).")
+        stock_line = f"{counted:%Y-%m-%d} 월말 실사 + 그 뒤 입고 − 예상 소비로 재고를 추정했어요 ({n_ref}개 품목)"
+        stock_more = ""
+    with st.expander(stock_line, icon=":material/inventory_2:"):
+        if stock_more:
+            st.markdown(stock_more)
+        st.markdown("거래처 청구·입고 이력(2024~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
+                    "월말 실사재고(수불부)가 있으면 재고를 추정해 참고로 보여 주고, 주문 간격이 길어 습관으로 판단할 수 없는 품목은 재고로 판단합니다.")
     orders = t[t["상태"] == "발주"].sort_values(["거래처", "확률"], ascending=[True, False])
     n_season, n_check = int((t["상태"] == "시즌 시작 예상").sum()), int((t["상태"] == "재고 확인").sum())
-    kpis([("발주 추천", f"{len(orders)}건", None), ("거래처", f"{orders['거래처'].nunique()}곳", None),
-          ("시즌 시작 예상", f"{n_season}건", None), ("재고 확인 필요", f"{n_check}건", None)])
+    with c_state:
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.badge(f"발주 추천 {len(orders)}건", color="blue" if len(orders) else "gray")
+            st.badge(f"거래처 {orders['거래처'].nunique()}곳", color="gray")
+            st.badge(f"시즌 시작 예상 {n_season}건", color="gray")
+            st.badge(f"재고 확인 필요 {n_check}건", color="orange" if n_check else "gray")
 
-    st.subheader("오늘 발주 추천")
+    st.subheader(f"오늘 발주 추천 ({len(orders)}건)")
     if orders.empty:
         n_day, n_wait = int((t["상태"].isin(["발주", "보류", "재고 확인"])).sum()), int((t["상태"] == "보류").sum())
         if n_day == 0:
@@ -565,7 +574,8 @@ def po_engine(leaf: Leaf):
         else:
             st.success(f"{day:%m/%d} 발주 가능한 정기 품목 {n_day}개 중 지금 발주할 시점인 품목은 없습니다 ({n_wait}개는 아직 이른 상태).", icon=":material/check_circle:")
     else:
-        pick = st.multiselect("거래처", sorted(orders["거래처"].unique()), default=sorted(orders["거래처"].unique()), key="po_engine_sup")
+        c_pick, c_bulk = st.columns([7, 3], vertical_alignment="center")
+        pick = c_pick.multiselect("거래처", sorted(orders["거래처"].unique()), default=sorted(orders["거래처"].unique()), key="po_engine_sup", label_visibility="collapsed")
         o = orders[orders["거래처"].isin(pick)]
         reqs, missing = engine_requests(o)
         by_code = {it.code: it.name for it in ITEMS.values() if it.code}
@@ -578,8 +588,8 @@ def po_engine(leaf: Leaf):
             "예상 재고": [_qty(round(r, 1), u) if pd.notna(r) else "" for r, u in zip(o["재고"], o["단위"])], "재고 주의": o["재고주의"],
             "발주 확률": (o["확률"] * 100).round(), "시즌": o["시즌"], "근거": o["사유"]})
         view_cols = [c for c in df.columns if c not in ("거래처", "근거")]
-        st.button(f"구매청구 만들기 ({len(reqs)}건)", icon=":material/add_shopping_cart:", on_click=add_engine_requests, args=(reqs,), disabled=not reqs,
-                  help="선택한 모든 거래처의 추천을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다. 업체별로 만들려면 아래 각 거래처의 버튼을 누르세요.")
+        c_bulk.button(f"구매청구 만들기 ({len(reqs)}건)", icon=":material/add_shopping_cart:", type="primary", width="stretch", on_click=add_engine_requests, args=(reqs,), disabled=not reqs,
+                      help="선택한 모든 거래처의 추천을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다. 업체별로 만들려면 아래 각 거래처의 버튼을 누르세요.")
         cols = {"발주 확률": st.column_config.ProgressColumn("발주 확률", min_value=0, max_value=100, format="%d%%",
                                                           help="이 품목을 오늘 발주할 가능성. 평소 주문 주기와 마지막 주문 후 경과일로 계산"),
                 "상한": st.column_config.TextColumn(help="평소보다 많이 팔릴 때를 대비한 여유 수량(25% 더)")}
