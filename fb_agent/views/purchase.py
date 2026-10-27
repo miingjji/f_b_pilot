@@ -12,7 +12,7 @@ import reorder_engine
 import stock_sim
 import store_calendar
 from config import TEST_MASTER
-from converter import parse_count
+from converter import parse_count, to_grams
 from data import ITEMS, SUPPLIERS
 from errors import InvalidInputError
 from importer import TEMPLATE_CSV, parse_inventory_file
@@ -824,6 +824,36 @@ def stock_flow(leaf: Leaf):
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="최근 7일 수불현황")
 
 
+ENTRY_COLUMNS = ["품목", "BOX", "PK", "낱개", "합계", "환산 기준"]
+ENTRY_CONFIG = {
+    "품목": st.column_config.TextColumn("품목", width=150, pinned=True),
+    "BOX": st.column_config.NumberColumn("BOX", min_value=0, format="%g", width="small", help="박스 수"),
+    "PK": st.column_config.NumberColumn("PK", min_value=0, format="%g", width="small", help="팩 수 (소수로 입력해도 돼요)"),
+    "낱개": st.column_config.NumberColumn("낱개", min_value=0, format="%g", width="small",
+                                        help="PK로 채우지 못한 낱개. 품목의 기본단위(g·ml·개 등)로 입력하세요 — 맨 오른쪽 '환산 기준'에 적혀 있어요."),
+    "합계": st.column_config.TextColumn("합계", width="medium", help="BOX·PK·낱개를 합친 환산 결과. 입력하면 바로 바뀌어요."),
+    "환산 기준": st.column_config.TextColumn("환산 기준", width="medium", help="이 품목의 1PK·1BOX가 얼마인지, 낱개를 무슨 단위로 세는지"),
+}
+
+
+def convert_basis(it) -> str:
+    """환산 기준 한 줄: '1PK=20kg · 1BOX=4PK · 낱개=g'. 낱개 수로 세는 품목(1PK=1개)은 '낱개=개'만."""
+    if it.base_unit not in ("g", "ml") and it.pk_weight_g == 1 and it.box_pk == 1:
+        return f"낱개={it.base_unit}"
+    return f"1PK={it.fmt(it.pk_weight_g)}" + (f" · 1BOX={it.box_pk:g}PK" if it.box_pk > 1 else "") + f" · 낱개={it.base_unit}"
+
+
+def entry_total(it, box, pk, loose) -> str:
+    """입력한 BOX·PK·낱개의 환산 합계: '48.3kg = 2.42팩' (무게·부피 품목) 또는 '24개'. 값이 비었거나 음수면 '입력 확인'."""
+    try:
+        g = to_grams(it, pk, loose, boxes=box)
+    except InvalidInputError:
+        return "입력 확인"
+    if g == 0:
+        return "0"
+    return f"{it.fmt(g)} = {stock_of(it, g)}" if it.base_unit in ("g", "ml") else stock_of(it, g)
+
+
 def stock_editor():
     """실사 재고 파일 업로드 + 입력 표. (품목, 총 g, 추천) 결과를 반환하고 현재 매장의 stock_g를 갱신."""
     s = inv_state()
@@ -871,11 +901,15 @@ def stock_editor():
     elif codes is not None and not show_all:
         mask &= table["품목코드"].isin(codes)
     view = table[mask]
-    edited = st.data_editor(view, hide_index=True, disabled=["품목코드", "품목", "분류", "단위"], width="stretch",
-                            key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}", alt="품목별 실사 재고 입력 표")
+    shown = view.assign(**{"환산 기준": [convert_basis(ITEMS[n]) for n in view["품목"]],
+                           "합계": [entry_total(ITEMS[n], b, p, l) for n, b, p, l in zip(view["품목"], view["BOX"], view["PK"], view["낱개"])]})
+    edited = st.data_editor(shown, hide_index=True, width="stretch", alt="품목별 실사 재고 입력 표", key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}",
+                            disabled=["품목코드", "품목", "분류", "단위", "합계", "환산 기준"], column_order=ENTRY_COLUMNS, column_config=ENTRY_CONFIG)
     t = table.copy()   # 보이는 행의 수정값만 전체 표에 반영 (필터로 가려진 행은 그대로)
     t.loc[edited.index, ["BOX", "PK", "낱개"]] = edited[["BOX", "PK", "낱개"]]
     s["table"] = t
+    if not edited[["BOX", "PK", "낱개"]].fillna(-1).equals(view[["BOX", "PK", "낱개"]].fillna(-1)):
+        st.rerun()   # 방금 고친 행의 환산 합계가 바로 보이도록 한 번 더 그린다 (표시 열은 저장된 값으로 계산하므로)
     st.caption(f"{len(view)}개 표시 / 전체 {len(table)}개" + (f" — 최근 {activity.DORMANT_DAYS}일 입고·청구가 있었던 품목만 보고 있어요 (위 스위치나 검색으로 나머지도 볼 수 있어요)" if codes is not None and not show_all and not q else ""))
 
     today, cal = get_today(), get_calendar()
