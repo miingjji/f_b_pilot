@@ -34,9 +34,32 @@ class EntryColumns(unittest.TestCase):
         for box, pk, loose in ((0, -1, 0), (float("nan"), 0, 0), (0, 0, None)):
             self.assertEqual(purchase.entry_total(j, box, pk, loose), "입력 확인", (box, pk, loose))
 
+    def test_check_flags_zero_huge_and_sudden_changes_but_not_ordinary_edits(self):
+        j = dataclasses.replace(ITEMS["짜사이"], daily_usage_g=500.0, usage_known=True)     # 1PK=1,000g, 하루 500g
+        base = (0, 4, 0)                                                                    # 추정 4PK = 4,000g (8일치)
+        chk = lambda now: purchase.entry_check(j, now, base)
+        self.assertEqual(chk((0, 4, 0)), "추정값")                                           # 건드리지 않은 행
+        self.assertEqual(chk((0, 5, 0)), "입력함")                                           # 조금 다른 값은 그냥 입력
+        self.assertEqual(chk((0, 0, 0)), "확인 필요 · 0으로 입력")
+        self.assertEqual(chk((0, 20, 0)), "확인 필요 · 추정의 5배")
+        self.assertEqual(chk((0, 1, 0)), "확인 필요 · 추정의 1/4")
+        self.assertEqual(chk((0, 2, 0)), "입력함")                                           # 4,000 → 2,000 은 절반이라 3배 미만
+        self.assertEqual(chk((0, 0, 900)), "확인 필요 · 추정의 1/4")                          # 900g: 4,000 의 1/4.4
+        self.assertEqual(chk((0, 40, 0)), "확인 필요 · 소비 80일치")                          # 40,000g 은 소비 60일치(30,000g)를 넘는다 — 배수보다 먼저 알려 준다
+        self.assertEqual(chk((0, -1, 0)), "확인 필요 · 입력 확인")
+        self.assertEqual(chk((0, float("nan"), 0)), "확인 필요 · 입력 확인")
+
+    def test_check_does_not_guess_when_there_is_no_estimate_or_usage(self):
+        j = dataclasses.replace(ITEMS["짜사이"], usage_known=False, daily_usage_g=0.0)
+        self.assertEqual(purchase.entry_check(j, (0, 7, 0), (0, 0, 0)), "입력함")           # 추정이 0이면 비교할 기준이 없고, 소비를 모르면 일수도 못 잰다
+        self.assertEqual(purchase.entry_check(j, (0, 48300, 0), (0, 0, 0)), "확인 필요 · 너무 큰 값")   # 그래도 48,300kg(5만 kg 가까이)은 한 품목으로 불가능하다
+        n = dataclasses.replace(ITEMS["냅킨"], usage_known=False, daily_usage_g=0.0)         # 개수 품목은 5만 개 기준
+        self.assertEqual(purchase.entry_check(n, (0, 0, 60000), (0, 0, 0)), "확인 필요 · 너무 큰 값")
+        self.assertEqual(purchase.entry_check(n, (0, 0, 40000), (0, 0, 0)), "입력함")
+
     def test_number_columns_reject_negative_values_and_name_the_unit_of_loose_counts(self):
         cfg = purchase.ENTRY_CONFIG
-        self.assertEqual(purchase.ENTRY_COLUMNS, ["품목", "BOX", "PK", "낱개", "합계", "환산 기준"])
+        self.assertEqual(purchase.ENTRY_COLUMNS, ["품목", "BOX", "PK", "낱개", "합계", "확인", "환산 기준"])
         for k in ("BOX", "PK", "낱개"):
             self.assertIsNotNone(cfg[k])
         self.assertIn("기본단위", str(cfg["낱개"]))

@@ -824,7 +824,7 @@ def stock_flow(leaf: Leaf):
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="최근 7일 수불현황")
 
 
-ENTRY_COLUMNS = ["품목", "BOX", "PK", "낱개", "합계", "환산 기준"]
+ENTRY_COLUMNS = ["품목", "BOX", "PK", "낱개", "합계", "확인", "환산 기준"]
 ENTRY_CONFIG = {
     "품목": st.column_config.TextColumn("품목", width=150, pinned=True),
     "BOX": st.column_config.NumberColumn("BOX", min_value=0, format="%g", width="small", help="박스 수"),
@@ -832,6 +832,7 @@ ENTRY_CONFIG = {
     "낱개": st.column_config.NumberColumn("낱개", min_value=0, format="%g", width="small",
                                         help="PK로 채우지 못한 낱개. 품목의 기본단위(g·ml·개 등)로 입력하세요 — 맨 오른쪽 '환산 기준'에 적혀 있어요."),
     "합계": st.column_config.TextColumn("합계", width="medium", help="BOX·PK·낱개를 합친 환산 결과. 입력하면 바로 바뀌어요."),
+    "확인": st.column_config.TextColumn("확인", width="medium", help="추정값 그대로인지, 직접 입력했는지, 이상한 값인지 알려 줘요. 0으로 입력했거나, 추정의 3배 이상·1/3 이하이거나, 소비 60일치를 넘으면 '확인 필요'."),
     "환산 기준": st.column_config.TextColumn("환산 기준", width="medium", help="이 품목의 1PK·1BOX가 얼마인지, 낱개를 무슨 단위로 세는지"),
 }
 
@@ -841,6 +842,35 @@ def convert_basis(it) -> str:
     if it.base_unit not in ("g", "ml") and it.pk_weight_g == 1 and it.box_pk == 1:
         return f"낱개={it.base_unit}"
     return f"1PK={it.fmt(it.pk_weight_g)}" + (f" · 1BOX={it.box_pk:g}PK" if it.box_pk > 1 else "") + f" · 낱개={it.base_unit}"
+
+
+CHECK_RATIO = 3   # 입력이 추정값의 이 배수 이상이거나 1/이 배수 이하이면 확인 필요
+CHECK_DAYS = 60   # 입력이 하루 소비량의 이 일수치를 넘으면 확인 필요 (자릿수 실수: 20 대신 200)
+CHECK_BIG = {"g": 500_000, "ml": 500_000}   # 소비량을 몰라도 매장 한 품목이 이 양(500kg·500L, 개수는 5만 개)을 넘을 수는 없다
+CHECK_BIG_COUNT = 50_000
+
+
+def entry_check(it, now, base) -> str:
+    """입력 행의 확인 문구. now·base = (BOX, PK, 낱개): base 는 화면을 열 때의 추정값. 확인이 필요한 행은 '확인 필요'로 시작한다.
+    같으면 '추정값', 직접 바꿨으면 '입력함', 0으로 입력했거나 소비 60일치를 넘거나 추정과 크게(3배 이상, 1PK 이상 차이) 다르면 '확인 필요 · …'."""
+    try:
+        g, g0 = to_grams(it, now[1], now[2], boxes=now[0]), to_grams(it, base[1], base[2], boxes=base[0])
+    except InvalidInputError:
+        return "확인 필요 · 입력 확인"
+    if g == g0:
+        return "추정값"
+    if g == 0:
+        return "확인 필요 · 0으로 입력"
+    if g > g0 and it.usage_known and it.daily_usage_g > 0 and g > CHECK_DAYS * it.daily_usage_g:
+        return f"확인 필요 · 소비 {g / it.daily_usage_g:.0f}일치"
+    if g > g0 and g > CHECK_BIG.get(it.base_unit, CHECK_BIG_COUNT):
+        return "확인 필요 · 너무 큰 값"
+    if g0 > 0 and abs(g - g0) >= it.pk_weight_g:
+        if g >= g0 * CHECK_RATIO:
+            return f"확인 필요 · 추정의 {g / g0:.0f}배"
+        if g * CHECK_RATIO <= g0:
+            return f"확인 필요 · 추정의 1/{g0 / g:.0f}"
+    return "입력함"
 
 
 def entry_total(it, box, pk, loose) -> str:
@@ -901,15 +931,22 @@ def stock_editor():
     elif codes is not None and not show_all:
         mask &= table["품목코드"].isin(codes)
     view = table[mask]
+    seed = s["seed"][1]                                                # 화면을 열 때의 추정값 (입력과 비교하는 기준)
+    checks = {i: entry_check(ITEMS[n], (b, p, l), (seed.at[i, "BOX"], seed.at[i, "PK"], seed.at[i, "낱개"]))
+              for i, n, b, p, l in zip(table.index, table["품목"], table["BOX"], table["PK"], table["낱개"])}
     shown = view.assign(**{"환산 기준": [convert_basis(ITEMS[n]) for n in view["품목"]],
-                           "합계": [entry_total(ITEMS[n], b, p, l) for n, b, p, l in zip(view["품목"], view["BOX"], view["PK"], view["낱개"])]})
+                           "합계": [entry_total(ITEMS[n], b, p, l) for n, b, p, l in zip(view["품목"], view["BOX"], view["PK"], view["낱개"])],
+                           "확인": [checks[i] for i in view.index]})
     edited = st.data_editor(shown, hide_index=True, width="stretch", alt="품목별 실사 재고 입력 표", key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}",
-                            disabled=["품목코드", "품목", "분류", "단위", "합계", "환산 기준"], column_order=ENTRY_COLUMNS, column_config=ENTRY_CONFIG)
+                            disabled=["품목코드", "품목", "분류", "단위", "합계", "확인", "환산 기준"], column_order=ENTRY_COLUMNS, column_config=ENTRY_CONFIG)
     t = table.copy()   # 보이는 행의 수정값만 전체 표에 반영 (필터로 가려진 행은 그대로)
     t.loc[edited.index, ["BOX", "PK", "낱개"]] = edited[["BOX", "PK", "낱개"]]
     s["table"] = t
     if not edited[["BOX", "PK", "낱개"]].fillna(-1).equals(view[["BOX", "PK", "낱개"]].fillna(-1)):
         st.rerun()   # 방금 고친 행의 환산 합계가 바로 보이도록 한 번 더 그린다 (표시 열은 저장된 값으로 계산하므로)
+    n_check = sum(c.startswith("확인 필요") for c in checks.values())
+    if n_check:
+        st.warning(f"확인이 필요한 입력이 {n_check}개 있어요. 표의 '확인' 열을 보세요.", icon=":material/error:")
     st.caption(f"{len(view)}개 표시 / 전체 {len(table)}개" + (f" — 최근 {activity.DORMANT_DAYS}일 입고·청구가 있었던 품목만 보고 있어요 (위 스위치나 검색으로 나머지도 볼 수 있어요)" if codes is not None and not show_all and not q else ""))
 
     today, cal = get_today(), get_calendar()
