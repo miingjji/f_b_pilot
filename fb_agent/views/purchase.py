@@ -300,11 +300,14 @@ def _cart_items(sup: str) -> list:
     return [ITEMS[n] for n in _cart() if ITEMS[n].supplier.name == sup]
 
 
-def sup_days(sup: str) -> list[date]:
-    """담긴 품목 모두에 맞는 발주 가능일 (업체 발주 요일·매장 영업일·입고일 영업일)."""
-    items, today, cal = _cart_items(sup), get_today(), get_calendar()
-    return [today + timedelta(days=i) for i in range(CAL_WEEKS * 7)
-            if items and all(is_order_day(it, today + timedelta(days=i), cal) for it in items)]
+def item_days(it) -> list[date]:
+    """품목의 발주 가능일 (업체 발주 요일·매장 영업일·입고일 영업일). 품목마다 따로 계산한다."""
+    today, cal = get_today(), get_calendar()
+    return [today + timedelta(days=i) for i in range(CAL_WEEKS * 7) if is_order_day(it, today + timedelta(days=i), cal)]
+
+
+def day_key(name: str) -> str:
+    return f"req_day_{name}"
 
 
 def day_advice(items: list, days: list[date], info: dict) -> tuple[date | None, dict]:
@@ -326,17 +329,26 @@ def day_advice(items: list, days: list[date], info: dict) -> tuple[date | None, 
     return best, out
 
 
-def chosen_day(sup: str) -> date | None:
+def chosen_day(it) -> date | None:
     """사용자가 고른 발주일. 고른 적이 없거나 더는 가능하지 않으면 가장 빠른 발주 가능일."""
-    days = sup_days(sup)
-    pick = ss.get(f"req_day_{sup}")
+    days = item_days(it)
+    pick = ss.get(day_key(it.name))
     return pick if pick in days else (days[0] if days else None)
 
 
 def item_schedule(it) -> tuple[date | None, date | None]:
-    """(발주일, 입고 예정일). 업체 카드에서 고른 날이 있으면 그 날, 없으면 가장 빠른 발주 가능일."""
-    od = chosen_day(it.supplier.name)
+    """(발주일, 입고 예정일). 품목 카드에서 고른 날이 있으면 그 날, 없으면 가장 빠른 발주 가능일."""
+    od = chosen_day(it)
     return (od, od + timedelta(days=it.lead_time_days)) if od and it.lead_time_days is not None else (None, None)
+
+
+def set_days(names: list[str], how: str, info: dict):
+    """how: 'first' 가장 빠른 날 / 'best' 권장일 (근거가 없는 품목은 가장 빠른 날)."""
+    for n in names:
+        days = item_days(ITEMS[n])
+        best = day_advice([ITEMS[n]], days, info)[0] if how == "best" else None
+        if days:
+            ss[day_key(n)] = best or days[0]
 
 
 def cart_submit():
@@ -384,7 +396,7 @@ def po_request(leaf: Leaf):
     c_cap, c_open = st.columns([5, 2], gap="medium", vertical_alignment="center")    # 아래 본문·청구 패널과 같은 열 비율 → 버튼 폭이 패널과 같다
     with c_open:
         req_list_button("open_req_list")
-    c_cap.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. 등록하면 청구 목록 창이 바로 열려 업체별로 확인한 뒤 발주서로 전환해요.")
+    c_cap.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 품목마다 발주일·입고일을 정하고 한 번에 등록합니다. 등록하면 청구 목록 창이 바로 열려 업체별로 확인한 뒤 발주서로 전환해요.")
     today, cal = get_today(), get_calendar()
     stock, pos = inv_state()["stock_g"], position_g()
     info = {it.name: (stock.get(it.name, 0.0), recommend(it, pos.get(it.name, 0.0), today, cal)) for it in ITEMS.values()}
@@ -444,31 +456,35 @@ def po_request(leaf: Leaf):
             cart = _cart()
             st.markdown(f"##### 청구 목록 ({len(cart)})")
             if not cart:
-                st.caption("카드에서 '담기'를 누르면 여기에 쌓여요. 거래처별 발주일 · 입고일도 여기서 정해요.")
+                st.caption("카드에서 '담기'를 누르면 여기에 쌓여요. 품목별 발주일 · 입고일도 여기서 정해요.")
             for sup in sorted({ITEMS[n].supplier.name for n in cart}):
                 items = _cart_items(sup)
-                st.markdown(f"**{sup}** · {len(items)}개 품목")
-                for it in items:
-                    with st.container(horizontal=True, vertical_alignment="center"):
-                        st.markdown(f"{it.name}  \n:gray[{qty_of(it, round(cart[it.name] * units_of(it).per, 2))}]")
-                        st.button("", key=f"rqx_{it.name}", icon=":material/close:", type="tertiary", on_click=cart_remove, args=(it.name,), help="목록에서 빼기")
-                days = sup_days(sup)
-                leads = sorted({it.lead_time_days for it in items if it.lead_time_days is not None})
-                if not days:
-                    st.warning(f"앞으로 {CAL_WEEKS}주 안에 발주 가능한 날이 없어요.", icon=":material/event_busy:")
-                    continue
-                key = f"req_day_{sup}"
-                if ss.get(key) not in days:                                    # 처음이거나 고른 날이 더는 가능하지 않으면 가장 빠른 발주일
-                    ss[key] = days[0]
-                lead = "D+" + (str(leads[0]) if len(leads) == 1 else f"{leads[0]}~{leads[-1]}") if leads else "데이터 없음"
-                best, advice = day_advice(items, days, info)
-                st.selectbox("발주일 → 입고일", days, key=key,
-                             format_func=lambda d, ls=leads, ld=lead, ad=advice: fmt_date(d) + " → " + (fmt_date(d + timedelta(days=ls[0])) if len(ls) == 1 else f"입고 {ld}") + (f"  ({ad[d]})" if d in ad else ""),
-                             help=f"발주 가능한 날만 나와요 (발주 {SUPPLIERS[sup].order_days_label}, 리드타임 {lead}, 휴점·입고 불가일 제외). "
-                                  "(권장)은 담긴 품목이 모두 재고 소진·안전재고 전에 입고되는 마지막 발주일이에요. 그보다 늦은 날은 결품 예상 일수를 알려 줘요.")
-                if best:
-                    st.caption(("권장 발주일: " + fmt_date(best) + " (지금 고른 날이 권장일이에요)") if ss[key] == best else
-                               f"권장 발주일: {fmt_date(best)}" + (" · 고른 날은 권장일보다 빨라요" if ss[key] < best else f" · 고른 날은 {advice.get(ss[key], '권장일보다 늦어요')}"))
+                names = [it.name for it in items]
+                with st.expander(f"{sup} · {len(items)}개 품목", expanded=len({ITEMS[n].supplier.name for n in cart}) == 1):
+                    b1, b2 = st.columns(2)
+                    b1.button("모두 빠른 날로", key=f"rqfirst_{sup}", width="stretch", on_click=set_days, args=(names, "first", info))
+                    b2.button("모두 권장일로", key=f"rqbest_{sup}", width="stretch", on_click=set_days, args=(names, "best", info),
+                              help="권장일 = 재고 소진·안전재고 전에 입고되는 마지막 발주일. 여유가 0일이라 하루만 어긋나도 결품 위험이 생겨요.")
+                    for it in items:
+                        with st.container(horizontal=True, vertical_alignment="center"):
+                            st.markdown(f"**{it.name}**  \n:gray[{qty_of(it, round(cart[it.name] * units_of(it).per, 2))}]")
+                            st.button("", key=f"rqx_{it.name}", icon=":material/close:", type="tertiary", on_click=cart_remove, args=(it.name,), help="목록에서 빼기")
+                        days = item_days(it)
+                        if not days or it.lead_time_days is None:
+                            st.warning(f"앞으로 {CAL_WEEKS}주 안에 발주 가능한 날이 없어요." if it.lead_time_days is not None else "리드타임 데이터가 없어 날짜를 계산할 수 없어요.", icon=":material/event_busy:")
+                            continue
+                        key = day_key(it.name)
+                        if ss.get(key) not in days:                                # 처음이거나 고른 날이 더는 가능하지 않으면 가장 빠른 발주일
+                            ss[key] = days[0]
+                        best, advice = day_advice([it], days, info)
+                        st.selectbox("발주일 → 입고일", days, key=key, label_visibility="collapsed",
+                                     format_func=lambda d, ad=advice, lt=it.lead_time_days: fmt_date(d) + " → " + fmt_date(d + timedelta(days=lt)) + (f"  ({ad[d]})" if d in ad else ""),
+                                     help=f"발주 가능한 날만 나와요 (발주 {SUPPLIERS[sup].order_days_label}, 리드타임 D+{it.lead_time_days}, 휴점·입고 불가일 제외). "
+                                          "(권장)은 이 품목이 재고 소진·안전재고 전에 입고되는 마지막 발주일이에요. 그보다 늦은 날은 결품 예상 일수를 알려 줘요.")
+                sched = [item_schedule(it) for it in items]
+                ods = sorted({od for od, _a in sched if od})
+                if ods:
+                    st.caption("발주 " + (fmt_date(ods[0]) if len(ods) == 1 else f"{fmt_date(ods[0])} ~ {fmt_date(ods[-1])} ({len(ods)}일로 나뉨)"))
                 st.divider()
             st.text_input("메모", placeholder="선택", key="req_memo")
             st.button(f"청구 등록 ({len(cart)}건)", type="primary", icon=":material/add:", width="stretch", disabled=not cart, on_click=cart_submit)
