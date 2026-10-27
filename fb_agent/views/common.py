@@ -1,4 +1,5 @@
 """화면 공통 헬퍼."""
+import re
 import zlib
 from datetime import date, timedelta
 
@@ -48,7 +49,8 @@ def kpis(items):
         for i, (label, value, delta) in enumerate(items):
             with st.container(key=f"kpi-{i}-{zlib.crc32(label.encode()):x}"):          # style.py 의 KPI 카드 CSS 대상
                 st.html(style.kpi_chip(label, i))
-                st.metric(label, value, delta, delta_color="off" if delta is None else "normal")
+                real = bool(delta) and re.match(r"^[+\-−]\d", delta) is not None          # +3.2% 같은 증감만 화살표·색을 쓰고, '영업일 28일' 같은 보조 문구는 그냥 글자로
+                st.metric(label, value, delta, delta_color="normal" if real else "off", delta_arrow="auto" if real else "off")
 
 
 def pct_delta(now: float, before: float) -> str:
