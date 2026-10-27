@@ -57,6 +57,14 @@ class EntryColumns(unittest.TestCase):
         self.assertEqual(purchase.entry_check(n, (0, 0, 60000), (0, 0, 0)), "확인 필요 · 너무 큰 값")
         self.assertEqual(purchase.entry_check(n, (0, 0, 40000), (0, 0, 0)), "입력함")
 
+    def test_table_signature_changes_only_when_the_entries_change(self):
+        from insights import build_table
+        a = build_table({n: 0.0 for n in ITEMS})
+        b = a.copy()
+        self.assertEqual(purchase.table_signature(a), purchase.table_signature(b))                 # 같은 내용은 같은 지문
+        b.loc[b.index[0], "PK"] = 3.0
+        self.assertNotEqual(purchase.table_signature(a), purchase.table_signature(b))              # 하나만 바뀌어도 달라진다
+
     def test_number_columns_reject_negative_values_and_name_the_unit_of_loose_counts(self):
         cfg = purchase.ENTRY_CONFIG
         self.assertEqual(purchase.ENTRY_COLUMNS, ["품목", "BOX", "PK", "낱개", "합계", "확인", "환산 기준"])

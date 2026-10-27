@@ -30,7 +30,7 @@ CSS = f"""
 /* ---- 제목 ---- */
 h1 {{ color: {INK}; letter-spacing: -0.025em; line-height: 1.2; padding-bottom: 0.15rem; text-wrap: balance; }}
 h2, h3 {{ color: {INK}; letter-spacing: -0.015em; text-wrap: balance; }}
-[data-testid="stCaptionContainer"] {{ color: {MUTED}; }}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] * {{ color: {MUTED}; opacity: 1 !important; }}   /* 기본 캡션은 투명도 0.6이라 대비가 2.4:1 */
 
 /* ---- 면 공통: 그림자 대신 가는 선. 종이 위에 놓은 장부 칸처럼 ---- */
 [class*="st-key-kpi-"], .st-key-filterbar, [data-testid="stForm"], [data-testid="stExpander"] details {{
@@ -74,7 +74,7 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT}; background:
 [data-testid="stSidebar"] {{ border-right: 1px solid {LINE}; box-shadow: none; }}
 [data-testid="stSidebar"] button[kind="tertiary"] {{ color: #34433A; }}
 [data-testid="stSidebar"] button[kind="tertiary"]:hover {{ background: {TINT}; color: {ACCENT}; }}
-[data-testid="stSidebar"] [data-testid="stExpander"] details {{ background: {SURFACE}; box-shadow: none; }}
+[data-testid="stSidebar"] [data-testid="stExpander"] details {{ background: transparent; border: 0; box-shadow: none; }}   /* 메뉴 묶음은 테두리 없이 (버튼 안에 또 테두리 상자를 겹치지 않는다) */
 
 /* style 만 담은 st.html 이 빈 줄을 만들지 않게 */
 [data-testid="stHtml"]:has(> style) {{ display: none; }}

@@ -7,6 +7,7 @@ import streamlit as st
 
 import activity
 import inventory_sim
+import routing
 import sales_data
 import reorder_engine
 import stock_sim
@@ -990,7 +991,12 @@ def stock_editor():
             st.button("이력에 저장", icon=":material/save:", type="primary", key="inv_save", on_click=save_snapshot, width="stretch",
                       help="현재 입력값을 '매장별 재고입력 이력'에 남깁니다.")
         if saved and saved[0] == sig:
-            st.caption(f":material/check_circle: {saved[1]}에 저장했어요.")
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.caption(f":material/check_circle: {saved[1]}에 저장했어요.")
+                if "po-auto" in routing.PAGES:                              # 저장하면 다음에 할 일로 바로 가는 길 (앱 안에서만; 테스트 화면에는 페이지 목록이 없다)
+                    st.page_link(routing.PAGES["po-auto"], label=f"긴급 {n['URGENT']}개 확인하기" if n["URGENT"] else "발주 추천 보기", icon=":material/arrow_forward:")
+                if "po-engine" in routing.PAGES:
+                    st.page_link(routing.PAGES["po-engine"], label="이력 기반 발주 추천", icon=":material/arrow_forward:")
         elif n_in:
             st.caption(":material/edit_note: 저장하지 않은 입력이 있어요. 끝나면 '이력에 저장'을 눌러 주세요." + (f" (마지막 저장 {saved[1]})" if saved else ""))
     return results, errors
