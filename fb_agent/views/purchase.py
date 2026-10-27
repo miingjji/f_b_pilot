@@ -97,6 +97,21 @@ def item_label(name: str) -> str:
     return f"{name} · {it.code} · {it.spec}"
 
 
+ALL_SUP = "전체 업체"
+
+
+def item_filter(key: str, items: list) -> list:
+    """품목을 고르기 전에 업체 선택 + 검색창(품목명·코드·규격)으로 후보를 좁힌다. 좁혀진 품목 목록을 돌려준다."""
+    c1, c2 = st.columns([2, 3], vertical_alignment="bottom")
+    sups = sorted({it.supplier.name for it in items})
+    sup = c1.selectbox("업체", [ALL_SUP, *sups], key=f"{key}_sup")
+    q = c2.text_input("품목 검색", placeholder="품목명 · 품목코드 · 규격", key=f"{key}_q", icon=":material/search:").strip().lower()
+    out = [it for it in items if (sup == ALL_SUP or it.supplier.name == sup) and (not q or q in f"{it.name} {it.code} {it.spec}".lower())]
+    if not out:
+        st.caption("조건에 맞는 품목이 없어요. 업체나 검색어를 바꿔 보세요.")
+    return out
+
+
 def status_badge(status: str):
     label, color, icon = STATUS[status]
     st.badge(label, icon=icon, color=color)
@@ -435,13 +450,14 @@ def po_leadtime(leaf: Leaf):
     st.subheader("거래처")
     st.dataframe(pd.DataFrame([{"거래처": s.name, "발주 요일": s.order_days_label, "리드타임": s.lead_time_label}
                                for s in SUPPLIERS.values()]), hide_index=True, width="stretch", alt="거래처 리드타임")
-    head, search = st.columns([3, 2], vertical_alignment="bottom")
+    head, pick, search = st.columns([3, 2, 3], vertical_alignment="bottom")
     head.subheader("품목별 다음 발주 가능일")
-    q = search.text_input("품목 검색", placeholder="품목명 · 거래처 · 품목코드", key="lt_q").strip().lower()
+    lsup = pick.selectbox("업체", [ALL_SUP, *SUPPLIERS], key="lt_sup")
+    q = search.text_input("품목 검색", placeholder="품목명 · 거래처 · 품목코드", key="lt_q", icon=":material/search:").strip().lower()
     st.caption("거래처 발주 요일, 매장 휴무, 입고일 영업 여부를 모두 반영합니다.")
     rows = []
     for it in ITEMS.values():
-        if q and q not in f"{it.name} {it.supplier.name} {it.code}".lower():
+        if (lsup != ALL_SUP and it.supplier.name != lsup) or (q and q not in f"{it.name} {it.supplier.name} {it.code}".lower()):
             continue
         days = order_days(it, today, cal)[:3]
         rows.append({"품목": it.name, "거래처": it.supplier.name, "리드타임": it.lead_time_label,
@@ -749,10 +765,17 @@ def recv_by_po(leaf: Leaf):
 @register("recv.general")
 def recv_general(leaf: Leaf):
     st.caption("발주서 없이 들어온 물품을 입고 처리합니다. 입고하면 재고에 반영돼요.")
-    sup = st.selectbox("거래처", list(SUPPLIERS))
+    s1, s2 = st.columns([2, 3], vertical_alignment="bottom")
+    sup = s1.selectbox("거래처", list(SUPPLIERS))
+    gq = s2.text_input("품목 검색", placeholder="품목명 · 품목코드 · 규격", key="gr_q", icon=":material/search:").strip().lower()
+    names = [n for n, i in ITEMS.items() if i.supplier.name == sup] or list(ITEMS)
+    names = [n for n in names if not gq or gq in f"{n} {ITEMS[n].code} {ITEMS[n].spec}".lower()]
+    if not names:
+        st.caption("조건에 맞는 품목이 없어요. 거래처나 검색어를 바꿔 보세요.")
+        return
     with st.container(border=True):
         c1, c2 = st.columns(2)
-        item = c1.selectbox("품목", [n for n, i in ITEMS.items() if i.supplier.name == sup] or list(ITEMS))
+        item = c1.selectbox("품목", names)
         packs = qty_input("수량", ITEMS[item], key=f"gr_qty_{item}", container=c2)
         memo = st.text_input("비고", placeholder="선택")
         if st.button("입고 등록", type="primary", icon=":material/move_to_inbox:"):
@@ -831,12 +854,15 @@ def io_transfer_request(leaf: Leaf):
         st.info("이체할 다른 매장이 등록되어 있지 않아요. 매장이 추가되면 이 화면에서 요청할 수 있어요.", icon=":material/database_off:")
         return
     with st.container(border=True):
+        pool = item_filter("tr", list(ITEMS.values()))
         c1, c2, c3 = st.columns(3)
         to = c1.selectbox("받는 매장", [s for s in STORES if s != me])
-        item = c2.selectbox("품목", list(ITEMS), format_func=item_label)
-        packs = qty_input("수량", ITEMS[item], key=f"tr_qty_{item}", container=c3)
+        item = c2.selectbox("품목", [it.name for it in pool], format_func=item_label) if pool else None
+        if item is None:
+            c3.empty()
+        packs = qty_input("수량", ITEMS[item], key=f"tr_qty_{item}", container=c3) if item else 0
         memo = st.text_input("메모", placeholder="선택")
-        if st.button("이체 요청", type="primary", icon=":material/swap_horiz:"):
+        if st.button("이체 요청", type="primary", icon=":material/swap_horiz:", disabled=not item):
             ss.transfer_requests = [*ss.transfer_requests, {
                 "번호": f"TR-{len(ss.transfer_requests) + 1:04d}", "요청일": get_today(), "보내는 매장": me, "받는 매장": to,
                 "품목": item, "수량(PK)": packs, "메모": memo, "상태": "요청"}]
@@ -975,8 +1001,9 @@ def stock_editor():
         st.markdown("**BOX · PK · 낱개**를 직접 고치면 바로 환산돼요. **낱개**는 PK로 채우지 못한 양을 품목의 기본단위(g·ml·개·장·롤 등)로 입력하고, "
                     "BOX·PK 입수는 품목 마스터 기준으로 자동 환산돼요. 표의 '환산 기준' 열에 품목마다 적혀 있어요.")
     table = s["table"]
-    c_cat, c_q, c_up = st.columns([5, 4, 2], vertical_alignment="center")
+    c_cat, c_sup, c_q, c_up = st.columns([4, 2, 3, 2], vertical_alignment="center")
     cat = c_cat.pills("분류", ["전체", *dict.fromkeys(table["분류"])], default="전체", key="inv_cat", label_visibility="collapsed") or "전체"
+    sup = c_sup.selectbox("업체", [ALL_SUP, *sorted({ITEMS[n].supplier.name for n in table["품목"]})], key="inv_sup", label_visibility="collapsed")
     q = c_q.text_input("품목 검색", placeholder="품목명 또는 코드로 찾기", key="inv_q", icon=":material/search:", label_visibility="collapsed").strip()
     with c_up.popover("파일로 불러오기", icon=":material/upload_file:", width="stretch"):
         up = st.file_uploader("실사 재고 파일 (엑셀 · CSV · JSON · 텍스트)", type=["csv", "tsv", "txt", "md", "json", "xlsx", "xls", "ods"],
@@ -1014,6 +1041,8 @@ def stock_editor():
     mask = pd.Series(True, index=table.index)
     if cat != "전체":
         mask &= table["분류"] == cat
+    if sup != ALL_SUP:
+        mask &= table["품목"].map(lambda n: ITEMS[n].supplier.name == sup)
     if q:
         mask &= table["품목"].str.contains(q, case=False, regex=False) | table["품목코드"].str.contains(q, case=False, regex=False)    # 검색하면 활동 없는 품목도 찾는다
     elif codes is not None and not show_all:
@@ -1027,7 +1056,7 @@ def stock_editor():
     shown = view.assign(**{"환산 기준": [convert_basis(ITEMS[n]) for n in view["품목"]],
                            "합계": [entry_total(ITEMS[n], b, p, l) for n, b, p, l in zip(view["품목"], view["BOX"], view["PK"], view["낱개"])],
                            "확인": [checks[i] for i in view.index]})
-    edited = st.data_editor(shown, hide_index=True, width="stretch", alt="품목별 실사 재고 입력 표", key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}_{which}",
+    edited = st.data_editor(shown, hide_index=True, width="stretch", alt="품목별 실사 재고 입력 표", key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{sup}_{q}_{which}",
                             disabled=["품목코드", "품목", "분류", "단위", "합계", "확인", "환산 기준"], column_order=ENTRY_COLUMNS, column_config=ENTRY_CONFIG)
     t = table.copy()   # 보이는 행의 수정값만 전체 표에 반영 (필터로 가려진 행은 그대로)
     t.loc[edited.index, ["BOX", "PK", "낱개"]] = edited[["BOX", "PK", "낱개"]]
@@ -1081,7 +1110,10 @@ def save_snapshot():
 def stock_input(leaf: Leaf):
     stock_editor()
     with st.expander("품목 하나만 빠르게 확인", icon=":material/search:"):
-        name = st.selectbox("품목", list(ITEMS), key="quick_item")
+        pool = item_filter("quick", list(ITEMS.values()))
+        if not pool:
+            return
+        name = st.selectbox("품목", [it.name for it in pool], key="quick_item")
         item = ITEMS[name]
         u = item.base_unit
         text = st.text_input(f"예: 1BOX 2PK 30{u}" + (", 2.5kg" if u == "g" else ", 1.5L" if u == "ml" else ""),
@@ -1120,7 +1152,9 @@ def stock_forecast(leaf: Leaf):
     st.caption("현재 재고에서 일 소비량만큼 줄어드는 단순 예측입니다 (입고 미반영). 기본으로 잔여일이 짧은 8개를 보여줘요.")
     usable = [(it, g, r) for it, g, r in results if it.usage_known and it.daily_usage_g > 0 and r.days_left is not None]
     default = [it.name for it, _g, _r in sorted(usable, key=lambda x: x[2].days_left)[:8]]
-    picked = st.multiselect("품목", [it.name for it, _g, _r in usable], default=default, key="fc_items")
+    cand = {it.name for it in item_filter("fc", [it for it, _g, _r in usable])}
+    options = [it.name for it, _g, _r in usable if it.name in cand or it.name in ss.get("fc_items", default)]    # 이미 고른 품목은 필터에 가려져도 남긴다
+    picked = st.multiselect("품목", options, default=[n for n in default if n in options], key="fc_items")
     days = range(0, 15)
     chart = pd.DataFrame({it.name: [max(0.0, (g - it.daily_usage_g * d) / it.pk_weight_g / units_of(it).per) for d in days]
                           for it, g, _r in usable if it.name in picked}, index=list(days))
