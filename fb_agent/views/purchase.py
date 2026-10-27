@@ -355,13 +355,13 @@ def req_item_card(it, g, r):
 def req_list_button(key: str):
     """청구 목록 창을 다시 여는 작은 버튼. 대기 중인 청구가 있으면 건수를 함께 보여 준다."""
     n, waiting = len(ss.purchase_requests), sum(r["상태"] == "청구" for r in ss.purchase_requests)
-    st.button(f"청구 목록 보기 ({n}건" + (f" · 전환 대기 {waiting}" if waiting else "") + ")", key=key, type="tertiary", icon=":material/list_alt:",
-              disabled=not n, on_click=open_req_list, help="등록한 청구를 업체별로 확인하고, 지금 발주할 것만 골라 발주서로 전환합니다.")
+    st.button(f"청구 목록 보기 ({n}건" + (f" · 전환 대기 {waiting}건" if waiting else "") + ")", key=key, type="primary" if waiting else "secondary",
+              icon=":material/list_alt:", width="stretch", disabled=not n, on_click=open_req_list, help="등록한 청구를 업체별로 확인하고, 지금 발주할 것만 골라 발주서로 전환합니다.")
 
 
 @register("po.request")
 def po_request(leaf: Leaf):
-    c_cap, c_open = st.columns([8, 3], vertical_alignment="center")
+    c_cap, c_open = st.columns([6, 4], vertical_alignment="center")
     with c_open:
         req_list_button("open_req_list")
     c_cap.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. 등록하면 청구 목록 창이 바로 열려 업체별로 확인한 뒤 발주서로 전환해요.")
@@ -377,7 +377,7 @@ def po_request(leaf: Leaf):
 
     main, side = st.columns([5, 2], gap="medium")
     with main:
-        st.markdown("##### 1. 거래처")
+        st.markdown("##### 거래처")
         names = list(labels)
         if ss.get("req_supplier") not in labels:
             ss.req_supplier = names[0]
@@ -404,7 +404,7 @@ def po_request(leaf: Leaf):
             ss.req_sig, ss.req_page = sig, 0
         pages = max(1, -(-len(items) // REQ_PAGE))
         page = min(ss.get("req_page", 0), pages - 1)
-        st.markdown(f"##### 2. 품목 ({len(items)}개)")
+        st.markdown(f"##### 품목 ({len(items)}개)")
         if not items:
             st.info("조건에 맞는 품목이 없습니다. 검색어나 분류를 바꿔 보세요.", icon=":material/search_off:")
         shown = items[page * REQ_PAGE:(page + 1) * REQ_PAGE]
@@ -422,7 +422,7 @@ def po_request(leaf: Leaf):
     with side:
         with st.container(border=True, key="req-cart"):                      # 스크롤해도 따라오게 style.py 에서 고정
             cart = _cart()
-            st.markdown(f"##### 3. 청구 목록 ({len(cart)})")
+            st.markdown(f"##### 청구 목록 ({len(cart)})")
             if not cart:
                 st.caption("카드에서 '담기'를 누르면 여기에 쌓여요. 거래처별 발주일 · 입고일도 여기서 정해요.")
             for sup in sorted({ITEMS[n].supplier.name for n in cart}):
