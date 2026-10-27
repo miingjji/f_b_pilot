@@ -361,7 +361,7 @@ def req_list_button(key: str):
 
 @register("po.request")
 def po_request(leaf: Leaf):
-    c_cap, c_open = st.columns([6, 4], vertical_alignment="center")
+    c_cap, c_open = st.columns([5, 2], gap="medium", vertical_alignment="center")    # 아래 본문·청구 패널과 같은 열 비율 → 버튼 폭이 패널과 같다
     with c_open:
         req_list_button("open_req_list")
     c_cap.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. 등록하면 청구 목록 창이 바로 열려 업체별로 확인한 뒤 발주서로 전환해요.")
