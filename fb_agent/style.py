@@ -68,6 +68,9 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT}; background:
 [data-baseweb="tab-highlight"] {{ background-color: {ACCENT}; height: 3px; }}
 [data-baseweb="tab-panel"] {{ padding-top: 1.1rem; }}
 
+/* ---- 구매청구 화면의 청구 목록은 스크롤해도 따라온다 ---- */
+[data-testid="stColumn"]:has(.st-key-req-cart) {{ position: sticky; top: 4rem; align-self: flex-start; }}
+
 /* ---- 버튼 ---- */
 .stMainBlockContainer button[kind="primary"] {{ box-shadow: none; font-weight: 600; letter-spacing: -0.005em; }}
 .stMainBlockContainer button[kind="secondary"] {{ border-color: {LINE}; background: {SURFACE}; }}

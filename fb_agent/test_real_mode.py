@@ -17,7 +17,7 @@ if HAS_REAL:
         CSV_SUPPLIERS = sum(1 for _ in csv.DictReader(f))
 
 PROBE = r"""
-import json, sys
+import json, re, sys
 sys.path.insert(0, %(root)r)
 from datetime import date
 import data, menu
@@ -64,7 +64,7 @@ views.render(get_leaf({leaf!r}))
 '''
 def render_at(leaf, y, m, d):
     return AppTest.from_string(SIM.format(leaf=leaf, y=y, m=m, d=d), default_timeout=120).run()
-note = lambda at: [i.value for i in at.info if "시뮬레이션" in i.value]
+note = lambda at: [i.value for i in at.markdown if "시뮬레이션" in i.value]   # 접힌 안내 안의 본문
 s_after, s_before, s_input = render_at("po-auto", 2026, 10, 24), render_at("po-auto", 2026, 9, 15), render_at("stock-input", 2026, 10, 24)
 rows_of = lambda at: max((len(d.value) for d in at.dataframe if "총재고" in d.value.columns), default=0)
 inp = lambda at: [c.value for c in at.caption if "개 표시 / 전체" in c.value]
@@ -77,8 +77,8 @@ out["sim"] = {"rows_default": rows_default, "rows_all": rows_all, "hidden_captio
               "after": note(s_after), "before": note(s_before), "input": [x.label for x in s_input.expander if "추정값" in x.label],
               "cols_after": sorted({c for d in s_after.dataframe for c in d.value.columns}),
               "closed_wd": list(s_after.session_state["cfg_closed_wd"]),
-              "urgent_after": next((m.value for m in s_after.metric if m.label == "긴급"), None),
-              "urgent_before": next((m.value for m in s_before.metric if m.label == "긴급"), None),
+              "todo_after": next((int(re.search(r"\((\d+)개\)", h.value).group(1)) for h in s_after.subheader if h.value.startswith("우선 처리")), None),
+              "todo_before": next((int(re.search(r"\((\d+)개\)", h.value).group(1)) for h in s_before.subheader if h.value.startswith("우선 처리")), None),
               "exc": [e.message[:200] for at in (s_after, s_before, s_input) for e in at.exception]}
 
 # 3-2) 발주 추천 (이력 기반): 자료가 있는 날 / 자료가 끝난 뒤 / 발주일이 아닌 날
@@ -172,7 +172,7 @@ class RealMode(unittest.TestCase):
         self.assertEqual(self.r["exceptions"], {})
 
     def test_po_auto_caps_cards_and_offers_bulk_request(self):
-        self.assertLessEqual(self.r["po_auto_cards"], 8)
+        self.assertLessEqual(self.r["po_auto_cards"], 10)
         self.assertEqual(len(self.r["po_auto_captions"]), 1)
         self.assertEqual(len(self.r["po_auto_buttons"]), 1)
 
@@ -183,7 +183,7 @@ class RealMode(unittest.TestCase):
         self.assertIn("9월 30일 월말 실사", r["after"][0])
         self.assertIn("10월 23일 마감", r["after"][0])                                    # 10-24 아침 재고 = 10-23 마감 재고
         self.assertEqual(r["closed_wd"], [])                                             # 일요일에도 영업 (일요일 휴무는 데모 기본값이었다)
-        self.assertLessEqual(int(r["urgent_after"].rstrip("개")), 12)                                 # 10-24 긴급: 실제 입고·오는 중인 주문을 반영한 값 (처음엔 24개)
+        self.assertLessEqual(r["todo_after"], 20)                                         # 10-24 우선 처리: 실제 입고·오는 중인 주문을 반영한 값 (긴급 + 지금·곧 발주)
         self.assertIn("이미 오는 중인 입고", r["after"][0])                                  # 발주 판단에 더한 입고 예정을 안내
         self.assertIn("오는 중 입고", r["cols_after"])
         self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에는 접힌 안내의 제목으로
@@ -192,7 +192,7 @@ class RealMode(unittest.TestCase):
     def test_item_lists_show_only_items_with_recent_activity_by_default(self):
         r = self.r["sim"]
         self.assertEqual(r["exc2"], [])
-        self.assertIn("입고·청구가 없는 품목도 보기", r["toggle_label"])
+        self.assertEqual(r["toggle_label"], "활동 없는 품목도 보기")
         self.assertEqual(r["rows_all"], CSV_ITEMS)                                        # 스위치를 켜면 전체 품목
         self.assertTrue(100 <= r["rows_default"] <= 260, r["rows_default"])               # 기본은 활동 있는 품목(약 170개) + 발주가 필요한 품목
         self.assertEqual(len(r["hidden_caption"]), 1)
