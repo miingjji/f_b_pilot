@@ -272,8 +272,8 @@ def cart_submit():
     for name, qty in cart.items():
         od, arr = item_schedule(ITEMS[name])
         add_request(name, round(qty * units_of(ITEMS[name]).per, 2), arr, memo, toast=False, order_day=od)
-    st.toast(f"구매청구 {len(cart)}건을 등록했어요.", icon=":material/check_circle:")
     ss.req_cart = {}
+    open_req_list()                                              # 등록하면 바로 청구 목록 창을 띄워 발주 전환으로 이어 준다
 
 
 def req_item_card(it, g, r):
@@ -301,7 +301,7 @@ def req_item_card(it, g, r):
 
 @register("po.request")
 def po_request(leaf: Leaf):
-    st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. '청구 목록' 창에서 업체별로 확인한 뒤 발주서로 전환해요.")
+    st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. 등록하면 청구 목록 창이 바로 열려 업체별로 확인한 뒤 발주서로 전환해요.")
     today, cal = get_today(), get_calendar()
     stock, pos = inv_state()["stock_g"], position_g()
     info = {it.name: (stock.get(it.name, 0.0), recommend(it, pos.get(it.name, 0.0), today, cal)) for it in ITEMS.values()}
@@ -383,9 +383,6 @@ def po_request(leaf: Leaf):
                 st.divider()
             st.text_input("메모", placeholder="선택", key="req_memo")
             st.button(f"청구 등록 ({len(cart)}건)", type="primary", icon=":material/add:", width="stretch", disabled=not cart, on_click=cart_submit)
-            waiting = sum(r["상태"] == "청구" for r in ss.purchase_requests)
-            st.button(f"청구 목록 ({len(ss.purchase_requests)}건)" + (f" · 전환 대기 {waiting}" if waiting else ""), icon=":material/list_alt:", width="stretch",
-                      disabled=not ss.purchase_requests, on_click=open_req_list, help="등록한 청구를 업체별로 확인하고 발주서로 전환합니다.")
 
 
 @register("po.request_detail")
