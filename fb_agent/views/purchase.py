@@ -174,25 +174,50 @@ def convert_to_po(req_no: str, toast: bool = True):
             return
 
 
-@st.dialog("청구를 발주로 전환하시겠습니까?")
-def confirm_convert(sup: str):
-    """업체의 대기 청구를 보여 주고, 확인하면 한꺼번에 발주서로 전환한다."""
+def ask_convert(sup: str | None):
+    ss.cv_confirm = sup
+
+
+def do_convert(sup: str):
     pend = [r for r in ss.purchase_requests if r["거래처"] == sup and r["상태"] == "청구"]
-    if not pend:
-        st.caption("전환할 청구가 없어요.")
+    for r in pend:
+        convert_to_po(r["청구번호"], toast=False)
+    ss.cv_confirm = None
+    ss.cv_done = f"{sup} {len(pend)}건을 발주서로 전환했어요."      # 알림은 창 본문에서 띄운다 (콜백에서 화면 요소를 그리면 안 됨)
+
+
+def open_req_list():
+    ss.cv_confirm = None
+    ss.pop("cv_done", None)
+    req_list_dialog()
+
+
+@st.dialog("청구 목록", width="large")
+def req_list_dialog():
+    """업체별 청구 목록. 발주 전환은 업체 단위로 확인(같은 창 안)한 뒤 처리한다."""
+    reqs = ss.purchase_requests
+    if ss.get("cv_done"):
+        st.success(ss.pop("cv_done"), icon=":material/check_circle:")
+    if not reqs:
+        st.caption("등록된 구매청구가 없어요.")
         return
-    st.markdown(f"**{sup}** · {len(pend)}건을 발주서로 만듭니다. 전환한 뒤에는 입고 대기 상태가 돼요.")
-    st.dataframe(pd.DataFrame([{"청구번호": r["청구번호"], "품목": r["품목"], "수량": qty_for(r["품목"], r["수량(PK)"]),
-                                "발주일": fmt_date(r.get("발주예정일")), "입고 예정": fmt_date(r["희망입고일"])} for r in pend]),
-                 hide_index=True, width="stretch")
-    ok, no = st.columns(2)
-    if ok.button(f"발주 전환 ({len(pend)}건)", type="primary", icon=":material/check:", width="stretch", key=f"cvok_{sup}"):
-        for r in pend:
-            convert_to_po(r["청구번호"], toast=False)
-        st.toast(f"{sup} {len(pend)}건을 발주서로 전환했어요.", icon=":material/check_circle:")
-        st.rerun()
-    if no.button("취소", width="stretch", key=f"cvno_{sup}"):
-        st.rerun()
+    for sup in dict.fromkeys(r["거래처"] for r in reversed(reqs)):
+        mine = [r for r in reversed(reqs) if r["거래처"] == sup]
+        pend = [r for r in mine if r["상태"] == "청구"]
+        with st.container(border=True):
+            head, act = st.columns([5, 2], vertical_alignment="center")
+            head.markdown(f"**{sup}** · 청구 {len(mine)}건" + (f" · 전환 대기 {len(pend)}건" if pend else " · 모두 발주 전환됨"))
+            if pend and ss.get("cv_confirm") != sup:
+                act.button(f"발주 전환 ({len(pend)}건)", key=f"cv_{sup}", type="primary", icon=":material/swap_horiz:", width="stretch", on_click=ask_convert, args=(sup,))
+            for r in mine:
+                st.markdown(f"{r['청구번호']} · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}"
+                            + ("" if r["상태"] == "청구" else f" · :gray[{r['상태']}]"))
+            if pend and ss.get("cv_confirm") == sup:
+                with st.container(border=True, key=f"cvbox_{sup}"):
+                    st.markdown(f"**{sup}**의 청구 {len(pend)}건을 발주로 전환하시겠습니까? 전환하면 입고 대기 상태가 돼요.")
+                    ok, no, _ = st.columns([2, 1, 3])
+                    ok.button(f"발주 전환 ({len(pend)}건)", key=f"cvok_{sup}", type="primary", icon=":material/check:", width="stretch", on_click=do_convert, args=(sup,))
+                    no.button("취소", key=f"cvno_{sup}", width="stretch", on_click=ask_convert, args=(None,))
 
 
 REQ_PAGE = 12            # 구매청구 화면에서 한 페이지에 보여 주는 품목 카드 수
@@ -276,7 +301,7 @@ def req_item_card(it, g, r):
 
 @register("po.request")
 def po_request(leaf: Leaf):
-    st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. 아래 청구 목록에서 업체별로 확인한 뒤 발주서로 전환해요.")
+    st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. '청구 목록' 창에서 업체별로 확인한 뒤 발주서로 전환해요.")
     today, cal = get_today(), get_calendar()
     stock, pos = inv_state()["stock_g"], position_g()
     info = {it.name: (stock.get(it.name, 0.0), recommend(it, pos.get(it.name, 0.0), today, cal)) for it in ITEMS.values()}
@@ -358,22 +383,9 @@ def po_request(leaf: Leaf):
                 st.divider()
             st.text_input("메모", placeholder="선택", key="req_memo")
             st.button(f"청구 등록 ({len(cart)}건)", type="primary", icon=":material/add:", width="stretch", disabled=not cart, on_click=cart_submit)
-
-    st.subheader("청구 목록")
-    reqs = ss.purchase_requests
-    if not reqs:
-        st.caption("등록된 구매청구가 없어요.")
-    for sup in dict.fromkeys(r["거래처"] for r in reversed(reqs)):
-        mine = [r for r in reversed(reqs) if r["거래처"] == sup]
-        pend = sum(r["상태"] == "청구" for r in mine)
-        with st.container(border=True):
-            head, act = st.columns([5, 2], vertical_alignment="center")
-            head.markdown(f"**{sup}** · 청구 {len(mine)}건" + (f" · 전환 대기 {pend}건" if pend else " · 모두 발주 전환됨"))
-            if pend:
-                act.button(f"발주 전환 ({pend}건)", key=f"cv_{sup}", type="primary", icon=":material/swap_horiz:", width="stretch", on_click=confirm_convert, args=(sup,))
-            for r in mine:
-                st.markdown(f"{r['청구번호']} · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}"
-                            + ("" if r["상태"] == "청구" else f" · :gray[{r['상태']}]"))
+            waiting = sum(r["상태"] == "청구" for r in ss.purchase_requests)
+            st.button(f"청구 목록 ({len(ss.purchase_requests)}건)" + (f" · 전환 대기 {waiting}" if waiting else ""), icon=":material/list_alt:", width="stretch",
+                      disabled=not ss.purchase_requests, on_click=open_req_list, help="등록한 청구를 업체별로 확인하고 발주서로 전환합니다.")
 
 
 @register("po.request_detail")
