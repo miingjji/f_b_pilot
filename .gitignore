@@ -17,3 +17,7 @@ __pycache__/
 
 # e2e 점검 스크립트가 만드는 스크린샷 (저장소에는 두지 않음)
 fb_agent/docs/screenshots/
+
+# 개인 설정 스킬 / 다시 만들 수 있는 정리본
+.claude/skills/caveman/
+fb_agent/data/organized/
