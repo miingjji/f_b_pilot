@@ -22,6 +22,7 @@ from menu import STORES, Leaf
 from models import fmt_amount
 from order_units import UNIT_SHORT, WHOLE_UNITS, packs_for
 from reorder import fmt_date, is_order_day, order_days, recommend, safety_stock
+from style import DANGER, WARN
 from state import get_calendar, get_store, get_today, inv_state, on_order_g, position_g, stock_note, stock_note_short
 from unit_info import display_unit, qty_for, qty_of, stock_of, unit_name, units_of
 from views import register
@@ -765,6 +766,31 @@ def po_received(po: dict) -> float:
     return round(po.get("입고수량(PK)", 0.0), 2)
 
 
+def po_tone(po: dict) -> str:
+    """입고 수량이 발주와 다른 정도: 'short'(덜 들어옴·남음) / 'over'(초과) / ''(정상)."""
+    got, ordered = po_received(po), po["수량(PK)"]
+    if po["상태"] == "부분입고" or (po["상태"] == "입고대기" and got > 0):
+        return "short"
+    return "over" if got > ordered else ""
+
+
+TONE_CSS = {"short": f"color: {DANGER}; font-weight: 700", "over": f"color: {WARN}; font-weight: 700"}
+
+
+def tone_html(text: str, tone: str) -> str:
+    return f'<span style="{TONE_CSS[tone]}">{text}</span>' if tone else text
+
+
+def po_gap_label(po: dict) -> str:
+    """입고수량 옆에 보여 줄 차이 문구 (정상이면 빈 칸)."""
+    tone, item, got, ordered = po_tone(po), po["품목"], po_received(po), po["수량(PK)"]
+    if tone == "over":
+        return f"초과 {qty_for(item, round(got - ordered, 2))}"
+    if tone == "short":
+        return ("남음 " if po["상태"] == "입고대기" else "부족 ") + qty_for(item, po_remaining(po))
+    return ""
+
+
 def po_remaining(po: dict) -> float:
     return round(max(po["수량(PK)"] - po_received(po), 0.0), 2)
 
@@ -847,15 +873,20 @@ def recv_by_po(leaf: Leaf):
             left, right = st.columns([5, 1], vertical_alignment="center")
             got = po_received(p)
             left.markdown(f"**{p['발주번호']}** · {p['품목']} {qty_for(p['품목'], p['수량(PK)'])} · {p['거래처']} · 입고예정 {fmt_date(p['입고예정'])}"
-                          + (f" · 일부 입고 {qty_for(p['품목'], got)} (남음 {qty_for(p['품목'], po_remaining(p))})" if got else ""))
+                          + (" · " + tone_html(f"일부 입고 {qty_for(p['품목'], got)} · {po_gap_label(p)}", "short") if got else ""), unsafe_allow_html=True)
             right.button("입고 처리", key=f"rc_{p['발주번호']}", type="primary", on_click=receive_dialog, args=(p["발주번호"],))
     st.subheader("전체 발주서")
     if pos:
-        df = pd.DataFrame(pos)
-        df["입고수량(PK)"] = [po_received(p) for p in pos]
-        df = pk_df(df)
+        st.caption(":red[빨강] 발주보다 덜 들어옴(남음·부족) · :orange[주황] 발주보다 더 들어옴(초과)")
+        df = pk_df(pd.DataFrame(pos).drop(columns=["입고수량(PK)"], errors="ignore"))
         df["입고수량"] = [qty_for(p["품목"], po_received(p)) for p in pos]
-        st.dataframe(df.drop(columns=["입고수량(PK)"]), hide_index=True, width="stretch", alt="발주서 목록")
+        df["차이"] = [po_gap_label(p) for p in pos]
+        tones = [po_tone(p) for p in pos]
+        css = pd.DataFrame("", index=df.index, columns=df.columns)
+        for c in ("입고수량", "차이"):
+            css[c] = [TONE_CSS.get(x, "") for x in tones]
+        css["상태"] = [TONE_CSS["short"] if p["상태"] == "부분입고" else "" for p in pos]
+        st.dataframe(df.style.apply(lambda _: css, axis=None), hide_index=True, width="stretch", alt="발주서 목록")
     else:
         st.caption("발주서가 없어요. 구매청구에서 발주로 전환하면 여기에 나와요.")
 
@@ -889,7 +920,10 @@ def recv_detail(leaf: Leaf):
         st.caption("입고 내역이 없어요.")
         return
     kind = st.segmented_control("구분", ["전체", "구매발주서", "일반입고"], default="전체", key="recv_kind") or "전체"
-    st.dataframe(pk_df(df if kind == "전체" else df[df["구분"] == kind]), hide_index=True, width="stretch", alt="입고 상세내역")
+    view = pk_df(df if kind == "전체" else df[df["구분"] == kind])
+    css = pd.DataFrame("", index=view.index, columns=view.columns)
+    css["비고"] = ["" if not isinstance(n, str) else TONE_CSS["short"] if "부족" in n else TONE_CSS["over"] if "초과" in n else "" for n in view["비고"]]
+    st.dataframe(view.style.apply(lambda _: css, axis=None), hide_index=True, width="stretch", alt="입고 상세내역")
 
 
 @register("recv.returns")
