@@ -82,3 +82,48 @@ def iso(df, col: str = "date"):
     out = df.copy()
     out[col] = out[col].dt.strftime("%Y-%m-%d")
     return out
+
+
+CHART_COLORS = ["#1F3B5C", "#6E86A8", "#0B1F3A", "#A7B1BE", "#2B2F36", "#8E9CB0", "#3E5C84", "#C3CAD4"]
+
+
+def axis_chart(kind: str, data, *, x: str | None = None, y=None, x_label: str | None = None, y_label: str | None = None, alt_text: str,
+               stack: bool = True, year: str | bool = False, height: int = 300):
+    """가로축 글자가 눕지 않는 차트 (bar·line·area). data 는 DataFrame/Series — x 열을 주거나, 없으면 인덱스가 가로축.
+    가로축이 날짜면 'MM-DD' 로 짧게 쓰고, 연도는 차트 왼쪽 위에 따로 적는다 (year=True 면 날짜에서 계산, 문자열이면 그대로)."""
+    import altair as alt
+    import pandas as pd
+    df = data.to_frame(name=data.name or "값") if isinstance(data, pd.Series) else data.copy()
+    if x is None:
+        df = df.rename_axis("가로축").reset_index()
+        x = df.columns[0]
+    ys = [y] if isinstance(y, str) else list(y) if y else [c for c in df.columns if c != x]
+    long = df[[x, *ys]].melt(id_vars=x, var_name="구분", value_name="값")
+    temporal = pd.api.types.is_datetime64_any_dtype(df[x])
+    order = None if temporal else list(dict.fromkeys(long[x]))
+    title = None
+    if year and temporal:
+        y1, y2 = df[x].min().year, df[x].max().year
+        title = alt.TitleParams(f"{y1}년" if y1 == y2 else f"{y1}년 ~ {y2}년", anchor="start", fontSize=13, fontWeight=600, color="#2B2F36", offset=8)
+    elif isinstance(year, str):
+        title = alt.TitleParams(year, anchor="start", fontSize=13, fontWeight=600, color="#2B2F36", offset=8)
+    axis = alt.Axis(labelAngle=0, labelOverlap=True, title=x_label, **({"format": "%m-%d"} if temporal else {}))
+    enc_x = alt.X(f"{x}:T" if temporal else f"{x}:N", axis=axis, **({} if temporal else {"sort": order}))
+    enc_y = alt.Y("값:Q", axis=alt.Axis(format=",.0f", title=y_label), **({"stack": None} if not stack and len(ys) > 1 and kind == "bar" else {}))
+    multi = len(ys) > 1
+    color = (alt.Color("구분:N", scale=alt.Scale(domain=ys, range=CHART_COLORS), legend=alt.Legend(orient="top", title=None, columns=6, labelLimit=140, symbolLimit=0))
+             if multi else alt.value(CHART_COLORS[0]))
+    tip = [alt.Tooltip(f"{x}:T" if temporal else f"{x}:N", title=x_label or "", **({"format": "%Y-%m-%d"} if temporal else {})),
+           *([alt.Tooltip("구분:N", title="구분")] if multi else []), alt.Tooltip("값:Q", format=",.0f", title=y_label or "값")]
+    base = alt.Chart(long, title=title) if title else alt.Chart(long)
+    if kind == "bar":
+        mark = base.mark_bar()
+        if multi and not stack:
+            enc = dict(x=enc_x, y=enc_y, color=color, xOffset=alt.XOffset("구분:N", sort=ys), tooltip=tip)
+        else:
+            enc = dict(x=enc_x, y=enc_y, color=color, tooltip=tip)
+    elif kind == "area":
+        mark, enc = base.mark_area(opacity=0.85), dict(x=enc_x, y=enc_y, color=color, tooltip=tip)
+    else:
+        mark, enc = base.mark_line(point=False, strokeWidth=2), dict(x=enc_x, y=enc_y, color=color, tooltip=tip)
+    st.altair_chart(mark.encode(**enc).properties(height=height), width="stretch", alt=alt_text)

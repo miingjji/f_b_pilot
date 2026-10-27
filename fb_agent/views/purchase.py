@@ -26,7 +26,7 @@ from style import DANGER, WARN
 from state import get_calendar, get_store, get_today, inv_state, on_order_g, position_g, stock_note, stock_note_short
 from unit_info import display_unit, qty_for, qty_of, stock_of, unit_name, units_of
 from views import register
-from views.common import kpis
+from views.common import axis_chart, kpis
 
 ss = st.session_state
 
@@ -1097,7 +1097,7 @@ def io_loss(leaf: Leaf):
         st.caption("등록된 손망실이 없어요.")
         return
     kpis([("건수", f"{len(df)}건", None), ("품목", f"{df['품목'].nunique()}개", None)])
-    st.bar_chart(df.groupby("사유").size(), alt="사유별 손망실 건수")
+    axis_chart("bar", df.groupby("사유").size().rename("건수"), alt_text="사유별 손망실 건수")
     st.dataframe(pk_df(df), hide_index=True, width="stretch", alt="손망실 상세내역")
 
 
@@ -1416,4 +1416,4 @@ def stock_forecast(leaf: Leaf):
     if chart.empty:
         st.caption("표시할 품목을 선택하세요.")
     else:
-        st.line_chart(chart, x_label="일 후", y_label="재고(품목별 발주단위)", alt="품목별 14일 재고 예측")
+        axis_chart("line", chart, x_label="일 후", y_label="재고(품목별 발주단위)", alt_text="품목별 14일 재고 예측")
