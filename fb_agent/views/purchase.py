@@ -753,8 +753,9 @@ def po_engine(leaf: Leaf):
 
 
 # ---------------- 입고관리 ----------------
-def add_receipt(day: date, supplier: str, item: str, packs: float, kind: str, memo: str = ""):
-    ss.receipts = [*ss.receipts, {"입고일": day, "거래처": supplier, "품목": item, "수량(PK)": packs, "구분": kind, "비고": memo}]
+def add_receipt(day: date, supplier: str, item: str, packs: float, kind: str, memo: str = "", po_no: str = ""):
+    ss.receipts = [*ss.receipts, {"입고번호": f"RC-{len(ss.receipts) + 1:04d}", "입고일": day, "거래처": supplier, "품목": item, "수량(PK)": packs, "구분": kind,
+                                  "발주번호": po_no, "비고": memo}]
     add_stock(item, packs)
 
 
@@ -766,12 +767,36 @@ def po_received(po: dict) -> float:
     return round(po.get("입고수량(PK)", 0.0), 2)
 
 
+RT_WAIT, RT_DONE, RT_CANCEL = "회수대기", "회수완료", "취소"
+RETURN_REASONS = ["초과입고", "품질 불량", "오배송", "유통기한", "기타"]
+
+
+def _returns() -> list:
+    return ss.get("returns") or []
+
+
+def returned_of(key: str, value: str, *, states=(RT_WAIT, RT_DONE)) -> float:
+    """입고 건(입고번호) 또는 발주서(발주번호)에 대해 이미 반품 등록한 수량(PK). 취소한 반품은 뺀다."""
+    return round(sum(r["수량(PK)"] for r in _returns() if r.get(key) == value and r["상태"] in states), 2)
+
+
+def po_over(po: dict) -> float:
+    return round(max(po_received(po) - po["수량(PK)"], 0.0), 2)
+
+
+def po_over_left(po: dict) -> float:
+    """초과 입고분 중 아직 반품 등록을 하지 않은 수량."""
+    return round(max(po_over(po) - returned_of("발주번호", po["발주번호"]), 0.0), 2)
+
+
 def po_tone(po: dict) -> str:
-    """입고 수량이 발주와 다른 정도: 'short'(덜 들어옴·남음) / 'over'(초과) / ''(정상)."""
+    """입고 수량이 발주와 다른 정도: 'short'(덜 들어옴·남음) / 'over'(초과) / ''(정상·반품 정리됨)."""
     got, ordered = po_received(po), po["수량(PK)"]
     if po["상태"] == "부분입고" or (po["상태"] == "입고대기" and got > 0):
         return "short"
-    return "over" if got > ordered else ""
+    if got > ordered:
+        return "over" if returned_of("발주번호", po["발주번호"], states=(RT_DONE,)) < po_over(po) else ""
+    return ""
 
 
 TONE_CSS = {"short": f"color: {DANGER}; font-weight: 700", "over": f"color: {WARN}; font-weight: 700"}
@@ -784,8 +809,12 @@ def tone_html(text: str, tone: str) -> str:
 def po_gap_label(po: dict) -> str:
     """입고수량 옆에 보여 줄 차이 문구 (정상이면 빈 칸)."""
     tone, item, got, ordered = po_tone(po), po["품목"], po_received(po), po["수량(PK)"]
-    if tone == "over":
-        return f"초과 {qty_for(item, round(got - ordered, 2))}"
+    if got > ordered:
+        over, done, wait = po_over(po), returned_of("발주번호", po["발주번호"], states=(RT_DONE,)), returned_of("발주번호", po["발주번호"], states=(RT_WAIT,))
+        base = f"초과 {qty_for(item, over)}"
+        if done >= over:
+            return base + " → 반품 회수 완료"
+        return base + (f" · 반품 회수 대기 {qty_for(item, wait)}" if wait else " · 반품 필요")
     if tone == "short":
         return ("남음 " if po["상태"] == "입고대기" else "부족 ") + qty_for(item, po_remaining(po))
     return ""
@@ -808,7 +837,7 @@ def receive_po(po_no: str, actual: float, rest: str | None, reason: str, memo: s
             elif memo:
                 note += f" · {memo}"
             po["입고수량(PK)"] = round(po_received(po) + actual, 2)
-            add_receipt(get_today(), po["거래처"], item, actual, "구매발주서", note)
+            add_receipt(get_today(), po["거래처"], item, actual, "구매발주서", note, po_no)
             if actual >= remain:
                 po["상태"] = "입고완료"
                 return f"{po_no} 입고 완료 — 재고에 {qty_for(item, actual)} 반영했어요."
@@ -875,6 +904,15 @@ def recv_by_po(leaf: Leaf):
             left.markdown(f"**{p['발주번호']}** · {p['품목']} {qty_for(p['품목'], p['수량(PK)'])} · {p['거래처']} · 입고예정 {fmt_date(p['입고예정'])}"
                           + (" · " + tone_html(f"일부 입고 {qty_for(p['품목'], got)} · {po_gap_label(p)}", "short") if got else ""), unsafe_allow_html=True)
             right.button("입고 처리", key=f"rc_{p['발주번호']}", type="primary", on_click=receive_dialog, args=(p["발주번호"],))
+    over = [p for p in pos if po_over_left(p) > 0]
+    if over:
+        st.subheader(f"초과 입고 — 반품 필요 ({len(over)}건)")
+        for p in over:
+            with st.container(border=True):
+                left, right = st.columns([5, 2], vertical_alignment="center")
+                left.markdown(f"**{p['발주번호']}** · {p['품목']} · {p['거래처']} · 발주 {qty_for(p['품목'], p['수량(PK)'])} → 입고 {qty_for(p['품목'], po_received(p))} · "
+                              + tone_html(f"초과 {qty_for(p['품목'], po_over_left(p))}", "over"), unsafe_allow_html=True)
+                right.button("초과분 반품 등록", key=f"ov_{p['발주번호']}", icon=":material/assignment_return:", width="stretch", on_click=over_return_dialog, args=(p["발주번호"],))
     st.subheader("전체 발주서")
     if pos:
         st.caption(":red[빨강] 발주보다 덜 들어옴(남음·부족) · :orange[주황] 발주보다 더 들어옴(초과)")
@@ -926,30 +964,115 @@ def recv_detail(leaf: Leaf):
     st.dataframe(view.style.apply(lambda _: css, axis=None), hide_index=True, width="stretch", alt="입고 상세내역")
 
 
+def create_return(receipt_no: str, packs: float, reason: str, memo: str = "", po_no: str = "") -> str | None:
+    """반품을 '회수 대기'로 등록한다 (재고는 회수 완료 때 차감). 등록할 수 없으면 이유를 돌려준다."""
+    rc = next((r for r in ss.receipts if r.get("입고번호") == receipt_no), None)
+    if rc is None:
+        return "입고 건을 찾을 수 없어요."
+    if packs <= 0:
+        return "반품 수량을 입력하세요."
+    left = round(rc["수량(PK)"] - returned_of("입고번호", receipt_no), 2)
+    if packs > left:
+        return f"이 입고 건에서 더 반품할 수 있는 수량은 {qty_for(rc['품목'], left)}예요 (입고 {qty_for(rc['품목'], rc['수량(PK)'])}, 이미 반품 등록 {qty_for(rc['품목'], round(rc['수량(PK)'] - left, 2))})."
+    ss.returns = [*_returns(), {"반품번호": f"RT-{len(_returns()) + 1:04d}", "반품일": get_today(), "거래처": rc["거래처"], "품목": rc["품목"], "수량(PK)": packs,
+                               "사유": reason, "상태": RT_WAIT, "입고번호": receipt_no, "발주번호": po_no or rc.get("발주번호", ""), "회수일": None, "메모": memo}]
+    return None
+
+
+def complete_return(no: str):
+    """거래처가 물건을 회수해 갔을 때: 이때 재고에서 차감한다."""
+    for r in _returns():
+        if r["반품번호"] == no and r["상태"] == RT_WAIT:
+            r["상태"], r["회수일"] = RT_DONE, get_today()
+            add_stock(r["품목"], -r["수량(PK)"])
+            st.toast(f"{no} 회수 완료 — 재고에서 {qty_for(r['품목'], r['수량(PK)'])} 차감했어요.", icon=":material/check_circle:")
+            return
+
+
+def cancel_return(no: str):
+    for r in _returns():
+        if r["반품번호"] == no and r["상태"] == RT_WAIT:
+            r["상태"] = RT_CANCEL
+            st.toast(f"{no} 반품을 취소했어요. 재고는 그대로예요.", icon=":material/undo:")
+            return
+
+
+@st.dialog("초과 입고분 반품", width="medium")
+def over_return_dialog(po_no: str):
+    """발주보다 더 들어온 수량을 반품 요청(회수 대기)으로 등록한다. 재고는 회수 완료 때 차감한다."""
+    po = next((x for x in ss.purchase_orders if x["발주번호"] == po_no), None)
+    rc = next((r for r in reversed(ss.receipts) if r.get("발주번호") == po_no), None)
+    if po is None or rc is None or po_over_left(po) <= 0:
+        st.caption("반품할 초과 입고분이 없어요.")
+        return
+    item, left = po["품목"], po_over_left(po)
+    st.markdown(f"**{po_no}** · {item} · {po['거래처']}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("발주", qty_for(item, po["수량(PK)"]), border=True)
+    c2.metric("실제 입고", qty_for(item, po_received(po)), border=True)
+    c3.metric("초과(반품 대상)", qty_for(item, left), border=True)
+    st.markdown("**반품할 수량**")
+    packs = qty_input("", ITEMS[item], key=f"ov_qty_{po_no}_{left}", default=left / units_of(ITEMS[item]).per)
+    too_many = packs > left
+    if too_many:
+        st.error(f"초과분({qty_for(item, left)})보다 많이 반품할 수 없어요.")
+    memo = st.text_input("메모", placeholder="선택 (예: 기사님께 회수 요청)", key=f"ov_memo_{po_no}")
+    st.caption("등록하면 '회수 대기'가 돼요. 재고는 거래처가 실제로 회수해 간 뒤 '반품' 화면에서 '회수 완료'를 눌러야 줄어요.")
+    ok, no = st.columns(2)
+    if ok.button("반품 등록 (회수 대기)", type="primary", icon=":material/assignment_return:", width="stretch", disabled=too_many, key=f"ov_ok_{po_no}"):
+        err = create_return(rc["입고번호"], packs, "초과입고", memo, po_no)
+        ss.rc_done = err or f"{po_no} 초과분 {qty_for(item, packs)} 반품을 등록했어요 (회수 대기)."
+        st.rerun()
+    if no.button("취소", width="stretch", key=f"ov_no_{po_no}"):
+        st.rerun()
+
+
 @register("recv.returns")
 def recv_returns(leaf: Leaf):
-    receipts = ss.receipts
+    rts = _returns()
+    kpis([("회수 대기", f"{sum(r['상태'] == RT_WAIT for r in rts)}건", None), ("회수 완료", f"{sum(r['상태'] == RT_DONE for r in rts)}건", None)])
+    st.caption("반품을 등록하면 '회수 대기'가 되고 재고는 그대로예요. 거래처가 물건을 회수해 간 뒤 '회수 완료'를 눌러야 재고에서 빠져요. 초과 입고는 구매발주서 기준 화면에서도 바로 등록할 수 있어요.")
+    receipts = [r for r in ss.receipts if r.get("입고번호") and round(r["수량(PK)"] - returned_of("입고번호", r["입고번호"]), 2) > 0]
+    st.subheader("반품 등록")
     if not receipts:
         st.caption("반품할 입고 내역이 없어요.")
-        return
-    with st.container(border=True):
-        idx = st.selectbox("입고 건", range(len(receipts)), format_func=lambda i: (
-            f"{receipts[i]['입고일']} · {receipts[i]['품목']} {qty_for(receipts[i]['품목'], receipts[i]['수량(PK)'])} ({receipts[i]['거래처']})"))
-        c1, c2 = st.columns(2)
-        packs = qty_input("반품 수량", ITEMS[receipts[idx]["품목"]], key=f"rt_qty_{receipts[idx]['품목']}", container=c1)
-        reason = c2.selectbox("사유", ["품질 불량", "오배송", "유통기한", "기타"])
-        if st.button("반품 등록", type="primary", icon=":material/assignment_return:"):
-            r = receipts[idx]
-            if packs > r["수량(PK)"]:
-                st.error("입고 수량보다 많이 반품할 수 없어요.")
-            else:
-                ss.returns = [*ss.returns, {"반품일": get_today(), "거래처": r["거래처"], "품목": r["품목"],
-                                           "수량(PK)": packs, "사유": reason}]
-                add_stock(r["품목"], -packs)
-                st.toast("반품을 등록했고 재고에서 차감했어요.", icon=":material/check_circle:")
+    else:
+        with st.container(border=True):
+            pool = {it.name for it in item_filter("rt", [ITEMS[n] for n in dict.fromkeys(r["품목"] for r in receipts)])}
+            shown = [r for r in receipts if r["품목"] in pool]
+            if shown:
+                idx = st.selectbox("입고 건", range(len(shown)), format_func=lambda i: (
+                    f"{shown[i]['입고번호']} · {shown[i]['입고일']} · {shown[i]['품목']} {qty_for(shown[i]['품목'], shown[i]['수량(PK)'])} ({shown[i]['거래처']})"
+                    f" · 반품 가능 {qty_for(shown[i]['품목'], round(shown[i]['수량(PK)'] - returned_of('입고번호', shown[i]['입고번호']), 2))}"))
+                r = shown[idx]
+                c1, c2 = st.columns(2)
+                packs = qty_input("반품 수량", ITEMS[r["품목"]], key=f"rt_qty_{r['입고번호']}", container=c1)
+                reason = c2.selectbox("사유", RETURN_REASONS, index=1)
+                memo = st.text_input("메모", placeholder="선택", key="rt_memo")
+                if st.button("반품 등록 (회수 대기)", type="primary", icon=":material/assignment_return:"):
+                    err = create_return(r["입고번호"], packs, reason, memo)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.toast("반품을 등록했어요. 회수가 끝나면 '회수 완료'를 눌러 주세요.", icon=":material/check_circle:")
+                        st.rerun()
+    waiting = [r for r in rts if r["상태"] == RT_WAIT]
+    st.subheader(f"회수 대기 ({len(waiting)}건)")
+    if not waiting:
+        st.caption("회수를 기다리는 반품이 없어요.")
+    for r in reversed(waiting):
+        with st.container(border=True):
+            left, a1, a2 = st.columns([5, 2, 1], vertical_alignment="center")
+            left.markdown(f"**{r['반품번호']}** · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])} · {r['거래처']} · {r['사유']}"
+                          + (f" · {r['발주번호']}" if r.get("발주번호") else "") + (f" · {r['메모']}" if r.get("메모") else ""))
+            a1.button(f"회수 완료 (재고 -{qty_for(r['품목'], r['수량(PK)'])})", key=f"rtdone_{r['반품번호']}", type="primary", on_click=complete_return, args=(r["반품번호"],), width="stretch")
+            a2.button("취소", key=f"rtcancel_{r['반품번호']}", on_click=cancel_return, args=(r["반품번호"],), width="stretch")
     st.subheader("반품 내역")
-    if ss.returns:
-        st.dataframe(pk_df(pd.DataFrame(ss.returns)), hide_index=True, width="stretch", alt="반품 내역")
+    if rts:
+        df = pk_df(pd.DataFrame(rts))
+        css = pd.DataFrame("", index=df.index, columns=df.columns)
+        css["상태"] = [TONE_CSS["over"] if s == RT_WAIT else "color: #566071" if s == RT_CANCEL else "" for s in df["상태"]]
+        st.dataframe(df.style.apply(lambda _: css, axis=None), hide_index=True, width="stretch", alt="반품 내역")
     else:
         st.caption("반품 내역이 없어요.")
 
@@ -1039,7 +1162,7 @@ def stock_flow(leaf: Leaf):
         inn = sum(r["수량(PK)"] for r in ss.receipts if r["품목"] == it.name and r["입고일"] > week_ago)
         out = it.daily_usage_g * 7 / pk
         loss = sum(r["수량(PK)"] for r in ss.losses if r["품목"] == it.name and r["일자"] > week_ago)
-        ret = sum(r["수량(PK)"] for r in ss.returns if r["품목"] == it.name and r["반품일"] > week_ago)
+        ret = sum(r["수량(PK)"] for r in _returns() if r["품목"] == it.name and r["상태"] == RT_DONE and r["회수일"] > week_ago)       # 재고에서 실제로 빠진 것만
         end = g / pk
         rows.append({"품목": it.name, "단위": unit, "기초": round((end - inn + out + loss + ret) * f, 1), "입고": round(inn * f, 1),
                      "소비": round(out * f, 1), "손망실": round(loss * f, 1), "반품": round(ret * f, 1), "기말": round(end * f, 1)})
