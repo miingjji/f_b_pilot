@@ -17,7 +17,7 @@ if HAS_REAL:
         CSV_SUPPLIERS = sum(1 for _ in csv.DictReader(f))
 
 PROBE = r"""
-import json, sys
+import json, re, sys
 sys.path.insert(0, %(root)r)
 from datetime import date
 import data, menu
@@ -64,7 +64,7 @@ views.render(get_leaf({leaf!r}))
 '''
 def render_at(leaf, y, m, d):
     return AppTest.from_string(SIM.format(leaf=leaf, y=y, m=m, d=d), default_timeout=120).run()
-note = lambda at: [i.value for i in at.info if "시뮬레이션" in i.value]
+note = lambda at: [i.value for i in at.markdown if "시뮬레이션" in i.value]   # 접힌 안내 안의 본문
 s_after, s_before, s_input = render_at("po-auto", 2026, 10, 24), render_at("po-auto", 2026, 9, 15), render_at("stock-input", 2026, 10, 24)
 rows_of = lambda at: max((len(d.value) for d in at.dataframe if "총재고" in d.value.columns), default=0)
 inp = lambda at: [c.value for c in at.caption if "개 표시 / 전체" in c.value]
@@ -74,11 +74,11 @@ rows_all = rows_of(s_after.toggle[0].set_value(True).run())                     
 input_caption_all = inp(s_input.toggle[0].set_value(True).run())
 out["sim"] = {"rows_default": rows_default, "rows_all": rows_all, "hidden_caption": hidden_caption, "toggle_label": toggle_label,
               "input_caption": input_caption, "input_caption_all": input_caption_all, "exc2": [],
-              "after": note(s_after), "before": note(s_before), "input": note(s_input),
+              "after": note(s_after), "before": note(s_before), "input": [x.label for x in s_input.expander if "추정값" in x.label],
               "cols_after": sorted({c for d in s_after.dataframe for c in d.value.columns}),
               "closed_wd": list(s_after.session_state["cfg_closed_wd"]),
-              "urgent_after": next((m.value for m in s_after.metric if m.label == "긴급"), None),
-              "urgent_before": next((m.value for m in s_before.metric if m.label == "긴급"), None),
+              "todo_after": next((int(re.search(r"\((\d+)개\)", h.value).group(1)) for h in s_after.subheader if h.value.startswith("우선 처리")), None),
+              "todo_before": next((int(re.search(r"\((\d+)개\)", h.value).group(1)) for h in s_before.subheader if h.value.startswith("우선 처리")), None),
               "exc": [e.message[:200] for at in (s_after, s_before, s_input) for e in at.exception]}
 
 # 3-2) 발주 추천 (이력 기반): 자료가 있는 날 / 자료가 끝난 뒤 / 발주일이 아닌 날
@@ -94,7 +94,7 @@ views.render(get_leaf("po-engine"))
 '''
 def render_engine(y, m, d):
     return AppTest.from_string(ENGINE.format(y=y, m=m, d=d), default_timeout=300).run()
-a1, a2, a3 = render_engine(2026, 10, 1), render_engine(2026, 10, 21), render_engine(2026, 10, 4)
+a1, a2, a3 = render_engine(2026, 10, 1), render_engine(2026, 10, 30), render_engine(2026, 10, 4)
 btn = [b for b in a1.button if b.label.startswith("구매청구 만들기")]
 n0 = len(a1.session_state["purchase_requests"])
 made = a2_ = None
@@ -113,9 +113,9 @@ out["engine"] = {
     "exc": [e.message[:200] for at in (a1, a2, a3) for e in at.exception],
     "orders_rows": sum(len(d.value) for d in a1.dataframe),
     "sup_cards": len([b for b in a1.button if b.key and b.key.startswith("po_engine_req_")]),
-    "kpis": [m.label for m in a1.metric],
+    "orders_header": [h.value for h in a1.subheader if h.value.startswith("오늘 발주 추천")],
     "plan_expander": [any("앞으로 2주 발주 예정" in x.label for x in at.expander) for at in (a1, a2)],
-    "sim_caption": [any("시뮬레이션 재고를 참고로" in c.value for c in at.caption) for at in (a1, a2)],
+    "sim_caption": [any("시뮬레이션 재고를 참고로" in x.label for x in at.expander) for at in (a1, a2)],
     "warn_ok": len(a1.warning), "warn_stale": len(a2.warning), "sunday_success": len(a3.success),
     "download": [b.label for b in a1.get("download_button")] if hasattr(a1, "get") else [],
 }
@@ -172,7 +172,7 @@ class RealMode(unittest.TestCase):
         self.assertEqual(self.r["exceptions"], {})
 
     def test_po_auto_caps_cards_and_offers_bulk_request(self):
-        self.assertLessEqual(self.r["po_auto_cards"], 8)
+        self.assertLessEqual(self.r["po_auto_cards"], 10)
         self.assertEqual(len(self.r["po_auto_captions"]), 1)
         self.assertEqual(len(self.r["po_auto_buttons"]), 1)
 
@@ -183,16 +183,16 @@ class RealMode(unittest.TestCase):
         self.assertIn("9월 30일 월말 실사", r["after"][0])
         self.assertIn("10월 23일 마감", r["after"][0])                                    # 10-24 아침 재고 = 10-23 마감 재고
         self.assertEqual(r["closed_wd"], [])                                             # 일요일에도 영업 (일요일 휴무는 데모 기본값이었다)
-        self.assertLessEqual(int(r["urgent_after"].rstrip("개")), 12)                                 # 10-24 긴급: 실제 입고·오는 중인 주문을 반영한 값 (처음엔 24개)
+        self.assertLessEqual(r["todo_after"], 20)                                         # 10-24 우선 처리: 실제 입고·오는 중인 주문을 반영한 값 (긴급 + 지금·곧 발주)
         self.assertIn("이미 오는 중인 입고", r["after"][0])                                  # 발주 판단에 더한 입고 예정을 안내
         self.assertIn("오는 중 입고", r["cols_after"])
-        self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에도 같은 안내
+        self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에는 접힌 안내의 제목으로
         self.assertEqual(r["before"], [])                                                 # 실사 전 날짜에는 안내 없음
 
     def test_item_lists_show_only_items_with_recent_activity_by_default(self):
         r = self.r["sim"]
         self.assertEqual(r["exc2"], [])
-        self.assertIn("입고·청구가 없는 품목도 보기", r["toggle_label"])
+        self.assertEqual(r["toggle_label"], "활동 없는 품목도 보기")
         self.assertEqual(r["rows_all"], CSV_ITEMS)                                        # 스위치를 켜면 전체 품목
         self.assertTrue(100 <= r["rows_default"] <= 260, r["rows_default"])               # 기본은 활동 있는 품목(약 170개) + 발주가 필요한 품목
         self.assertEqual(len(r["hidden_caption"]), 1)
@@ -206,11 +206,11 @@ class RealMode(unittest.TestCase):
         self.assertEqual(r["exc"], [])
         self.assertGreaterEqual(r["orders_rows"], 10)                                  # 2026-10-01(목) 에는 실제 추천이 여러 건
         self.assertGreaterEqual(r["sup_cards"], 2)                                     # 거래처마다 카드와 '이 업체 청구' 버튼
-        self.assertEqual(r["kpis"], ["발주 추천", "거래처", "시즌 시작 예상", "재고 확인 필요"])
+        self.assertRegex(r["orders_header"][0], r"오늘 발주 추천 \((\d+)건\)")
         self.assertEqual(r["plan_expander"], [True, True])                              # 발주일 예측(시뮬레이션)이 있는 날짜에는 '앞으로 2주 발주 예정'
-        self.assertEqual(r["sim_caption"], [False, True])                                # 10-01 은 실사 후 14일 안(실사 추정), 10-21 은 시뮬레이션 재고를 참고로
+        self.assertEqual(r["sim_caption"], [False, True])                                # 10-01 은 실사 후 14일 안(실사 추정), 10-30 은 시뮬레이션 재고를 참고로
         self.assertEqual(r["warn_ok"], 0)                                              # 자료 끝 3일 안이면 경고 없음
-        self.assertEqual(r["warn_stale"], 1)                                           # 자료가 끝난 뒤(10-21)에는 경고
+        self.assertEqual(r["warn_stale"], 1)                                           # 구매청구 자료(10-24)가 끝난 지 3일을 넘은 10-30 에는 경고
         self.assertEqual(r["sunday_success"], 1)                                       # 일요일은 발주일이 아니라는 안내
         self.assertEqual(len(r["download"]), 1)
 

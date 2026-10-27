@@ -1,30 +1,52 @@
-# 밝은 대시보드 테마: 옅은 회색 배경 + 흰 카드 + 파랑(주)·주황(보조) 포인트. 카드 그림자·여백 등은 style.py 의 CSS 가 맡는다.
+# 네이비 테마: 사용자가 정한 5색 #0B1F3A #1F3B5C #A7B1BE #E6E9EF #2B2F36 을 섞어 쓴다. 바탕 #E6E9EF, 글자 #2B2F36, 제목·사이드바 #0B1F3A, 포인트 #1F3B5C.
+# 5색에 없는 빨강·주황은 '문제가 있는 곳'을 알리는 상태색으로만 따로 둔다.
+# 글씨체는 Pretendard (static/fonts, OFL 라이선스)를 앱에 담아 쓴다. 카드·여백·탭 같은 모양은 style.py 의 CSS 가 맡는다.
+[server]
+enableStaticServing = true
+
+[client]
+toolbarMode = "minimal"   # 개발용 Deploy 버튼 같은 것을 숨긴다
+
 [theme]
 base = "light"
-primaryColor = "#2563C9"
-backgroundColor = "#F3F5F9"
-secondaryBackgroundColor = "#EAEFF7"
-textColor = "#1F2A44"
-borderColor = "#E1E7F0"
-baseRadius = "12px"
-buttonRadius = "10px"
+primaryColor = "#1F3B5C"
+backgroundColor = "#E6E9EF"
+secondaryBackgroundColor = "#D6DBE3"
+textColor = "#2B2F36"
+borderColor = "#C3CAD4"
+linkColor = "#1F3B5C"
+font = "Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif"
+codeFont = "'D2Coding', 'Noto Sans Mono', monospace"
+baseFontSize = 15
+baseRadius = "6px"
+buttonRadius = "6px"
 showSidebarBorder = false
-metricValueFontSize = "1.9rem"
+headingFontSizes = ["1.9rem", "1.45rem", "1.15rem"]
+headingFontWeights = [700, 650, 650]
+metricValueFontSize = "1.7rem"
 metricValueFontWeight = 700
-dataframeHeaderBackgroundColor = "#EEF3FB"
-dataframeHeaderTextColor = "#2A3B5F"
-dataframeBorderColor = "#E1E7F0"
-chartCategoricalColors = ["#2E7DD7", "#F08A24", "#17A398", "#8B5CF6", "#E5484D", "#64748B", "#F5C518", "#4C8BF5"]
-chartSequentialColors = ["#EEF4FD", "#DCE8FA", "#C3D8F6", "#A5C4F0", "#85AEE8", "#6597DE", "#467FD0", "#2F68BA", "#2253A0", "#183F82"]
-orangeColor = "#F08A24"
-blueColor = "#2E7DD7"
-greenColor = "#17A398"
-violetColor = "#8B5CF6"
-grayColor = "#64748B"
+dataframeBorderColor = "#C3CAD4"
+dataframeHeaderBackgroundColor = "#CED4DC"
+dataframeHeaderTextColor = "#0B1F3A"
+redColor = "#B3261E"
+orangeColor = "#8F4F00"
+yellowColor = "#7A5C00"
+greenColor = "#2F6B4F"
+blueColor = "#1F3B5C"
+violetColor = "#5B4F7A"
+grayColor = "#566071"
+chartCategoricalColors = ["#1F3B5C", "#A7B1BE", "#0B1F3A", "#6E86A8", "#2B2F36", "#8E9CB0", "#3E5C84", "#C3CAD4"]
+chartSequentialColors = ["#EEF1F5", "#D9DFE8", "#C3CCD9", "#A7B1BE", "#8795AA", "#687A93", "#4D617E", "#364C6B", "#1F3B5C", "#0B1F3A"]
+
+[[theme.fontFaces]]
+family = "Pretendard"
+url = "app/static/fonts/PretendardVariable.woff2"
+weight = "45 920"
+style = "normal"
 
 [theme.sidebar]
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F3F6FB"
-textColor = "#1F2A44"
-primaryColor = "#2563C9"
-borderColor = "#E1E7F0"
+backgroundColor = "#0B1F3A"
+secondaryBackgroundColor = "#1E3A60"
+textColor = "#E6E9EF"
+primaryColor = "#A7B1BE"
+borderColor = "#1F3B5C"

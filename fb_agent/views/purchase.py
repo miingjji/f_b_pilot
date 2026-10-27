@@ -7,12 +7,13 @@ import streamlit as st
 
 import activity
 import inventory_sim
+import routing
 import sales_data
 import reorder_engine
 import stock_sim
 import store_calendar
 from config import TEST_MASTER
-from converter import parse_count
+from converter import parse_count, to_grams
 from data import ITEMS, SUPPLIERS
 from errors import InvalidInputError
 from importer import TEMPLATE_CSV, parse_inventory_file
@@ -21,7 +22,7 @@ from menu import STORES, Leaf
 from models import fmt_amount
 from order_units import UNIT_SHORT, WHOLE_UNITS, packs_for
 from reorder import fmt_date, is_order_day, order_days, recommend, safety_stock
-from state import get_calendar, get_store, get_today, inv_state, on_order_g, position_g, stock_note
+from state import get_calendar, get_store, get_today, inv_state, on_order_g, position_g, stock_note, stock_note_short
 from unit_info import display_unit, qty_for, qty_of, stock_of, unit_name, units_of
 from views import register
 from views.common import kpis
@@ -38,7 +39,7 @@ STATUS = {
     "NO_DATA": ("데이터 없음", "gray", ":material/help:"),
 }
 ACTION = ("URGENT", "ORDER_NOW", "ORDER_SOON")
-MAX_CARDS = 8   # 우선 처리 카드를 한 번에 펼치는 최대 개수 (나머지는 접어 둠)
+MAX_CARDS = 10   # 우선 처리를 한 번에 펼치는 최대 개수 (나머지는 표로)
 STATUS_ORDER = {s: i for i, s in enumerate(STATUS)}
 
 
@@ -63,9 +64,9 @@ def active_codes() -> frozenset | None:
     return _active_codes(activity.stamp()) or None
 
 
-def dormant_toggle(key: str) -> bool:
+def dormant_toggle(key: str, label: str | None = None) -> bool:
     """'활동 없는 품목도 보기' 스위치. 선택은 화면을 옮겨도 유지한다(cfg_show_dormant)."""
-    on = st.toggle(f"최근 {activity.DORMANT_DAYS}일 입고·청구가 없는 품목도 보기", value=ss.get("cfg_show_dormant", False), key=key,
+    on = st.toggle(label or f"최근 {activity.DORMANT_DAYS}일 입고·청구가 없는 품목도 보기", value=ss.get("cfg_show_dormant", False), key=key,
                    help=f"기본은 최근 {activity.DORMANT_DAYS}일 안에 입고나 구매청구가 있었던 품목과 발주가 필요한 품목만 보여줍니다. 몇 달에 한 번 사는 집기·유니폼, 쓰지 않는 품목은 숨겨져요.")
     ss.cfg_show_dormant = on
     return on
@@ -159,7 +160,7 @@ def add_requests_bulk(todo):
     st.toast(f"구매청구 {made}건을 만들었어요 (이미 청구한 {len(todo) - made}건은 건너뜀).", icon=":material/check_circle:")
 
 
-def convert_to_po(req_no: str):
+def convert_to_po(req_no: str, toast: bool = True):
     for r in ss.purchase_requests:
         if r["청구번호"] == req_no and r["상태"] == "청구":
             lead = ITEMS[r["품목"]].lead_time_days or 0
@@ -168,8 +169,86 @@ def convert_to_po(req_no: str):
                 "수량(PK)": r["수량(PK)"], "발주일": r.get("발주예정일") or get_today(),
                 "입고예정": r["희망입고일"] or get_today() + timedelta(days=lead), "상태": "입고대기"}]
             r["상태"] = "발주완료"
-            st.toast(f"{req_no}을(를) 발주서로 전환했어요.", icon=":material/check_circle:")
+            if toast:
+                st.toast(f"{req_no}을(를) 발주서로 전환했어요.", icon=":material/check_circle:")
             return
+
+
+def _pending() -> list:
+    return [r for r in ss.purchase_requests if r["상태"] == "청구"]
+
+
+def _selected() -> list:
+    return [r for r in _pending() if ss.get(f"cvsel_{r['청구번호']}")]
+
+
+def ask_convert(on: bool):
+    ss.cv_confirm = on
+
+
+def pick_all(sup: str, on: bool):
+    for r in _pending():
+        if r["거래처"] == sup:
+            ss[f"cvsel_{r['청구번호']}"] = on
+    ss.cv_confirm = False
+
+
+def do_convert():
+    chosen = _selected()
+    for r in chosen:
+        convert_to_po(r["청구번호"], toast=False)
+        ss[f"cvsel_{r['청구번호']}"] = False
+    ss.cv_confirm = False
+    ss.cv_done = f"{len(chosen)}건을 발주서로 전환했어요."      # 알림은 창 본문에서 띄운다 (콜백에서 화면 요소를 그리면 안 됨)
+
+
+def open_req_list():
+    ss.cv_confirm = False
+    ss.pop("cv_done", None)
+    for r in ss.purchase_requests:
+        ss[f"cvsel_{r['청구번호']}"] = False
+    req_list_dialog()
+
+
+@st.dialog("청구 목록", width="large")
+def req_list_dialog():
+    """업체별 청구 목록. 지금 발주할 건만 골라 전환한다 (전환 전에 같은 창 안에서 한 번 더 확인)."""
+    reqs = ss.purchase_requests
+    if ss.get("cv_done"):
+        st.success(ss.pop("cv_done"), icon=":material/check_circle:")
+    if not reqs:
+        st.caption("등록된 구매청구가 없어요.")
+        return
+    st.caption("지금 발주할 청구만 체크한 뒤 아래 '선택 발주 전환'을 누르세요. 체크하지 않은 청구는 그대로 남아요.")
+    for sup in dict.fromkeys(r["거래처"] for r in reversed(reqs)):
+        mine = [r for r in reversed(reqs) if r["거래처"] == sup]
+        pend = [r for r in mine if r["상태"] == "청구"]
+        with st.container(border=True):
+            head, a1, a2 = st.columns([5, 1.3, 1.3], vertical_alignment="center")
+            head.markdown(f"**{sup}** · 청구 {len(mine)}건" + (f" · 전환 대기 {len(pend)}건" if pend else " · 모두 발주 전환됨"))
+            if pend:
+                a1.button("전체 선택", key=f"cvall_{sup}", width="stretch", on_click=pick_all, args=(sup, True))
+                a2.button("선택 해제", key=f"cvnone_{sup}", width="stretch", on_click=pick_all, args=(sup, False))
+            for r in mine:
+                line = f"{r['청구번호']} · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}"
+                if r["상태"] == "청구":
+                    st.checkbox(line, key=f"cvsel_{r['청구번호']}", on_change=ask_convert, args=(False,))
+                else:
+                    st.markdown(f":gray[{line} · {r['상태']}]")
+    chosen = _selected()
+    if not _pending():
+        return
+    if ss.get("cv_confirm") and chosen:
+        with st.container(border=True, key="cvbox"):
+            st.markdown(f"**선택한 {len(chosen)}건**을 발주로 전환하시겠습니까? 전환하면 입고 대기 상태가 돼요.")
+            st.dataframe(pd.DataFrame([{"거래처": r["거래처"], "청구번호": r["청구번호"], "품목": r["품목"], "수량": qty_for(r["품목"], r["수량(PK)"]),
+                                        "발주일": fmt_date(r.get("발주예정일")), "입고 예정": fmt_date(r["희망입고일"])} for r in chosen]),
+                         hide_index=True, width="stretch")
+            ok, no, _ = st.columns([2, 1, 3])
+            ok.button(f"발주 전환 ({len(chosen)}건)", key="cvok", type="primary", icon=":material/check:", width="stretch", on_click=do_convert)
+            no.button("취소", key="cvno", width="stretch", on_click=ask_convert, args=(False,))
+    else:
+        st.button(f"선택 발주 전환 ({len(chosen)}건)", key="cvgo", type="primary", icon=":material/swap_horiz:", disabled=not chosen, on_click=ask_convert, args=(True,))
 
 
 REQ_PAGE = 12            # 구매청구 화면에서 한 페이지에 보여 주는 품목 카드 수
@@ -218,56 +297,14 @@ def item_schedule(it) -> tuple[date | None, date | None]:
     return (od, od + timedelta(days=it.lead_time_days)) if od and it.lead_time_days is not None else (None, None)
 
 
-def pick_day(sup: str, d: date):
-    ss[f"req_day_{sup}"] = d
-
-
 def cart_submit():
     cart = _cart()
     memo = ss.get("req_memo", "")
     for name, qty in cart.items():
         od, arr = item_schedule(ITEMS[name])
         add_request(name, round(qty * units_of(ITEMS[name]).per, 2), arr, memo, toast=False, order_day=od)
-    st.toast(f"구매청구 {len(cart)}건을 등록했어요.", icon=":material/check_circle:")
     ss.req_cart = {}
-
-
-def schedule_calendar():
-    """청구 목록에 담긴 거래처마다 카드형 달력: 발주 가능한 날을 눌러 발주일을 정하면 입고일이 따라온다."""
-    sups = sorted({ITEMS[n].supplier.name for n in _cart()})
-    if not sups:
-        return
-    today = get_today()
-    st.markdown("##### 3. 발주일 · 입고일")
-    st.caption("거래처마다 발주 가능한 날만 눌러서 고를 수 있어요. 날짜를 누르면 입고 예정일이 함께 정해집니다. 회색 날짜는 발주 요일이 아니거나 휴점·입고 불가일이에요.")
-    start = today - timedelta(days=today.weekday())
-    for sup in sups:
-        items, days = _cart_items(sup), set(sup_days(sup))
-        cur = chosen_day(sup)
-        leads = sorted({it.lead_time_days for it in items if it.lead_time_days is not None})
-        lead = "데이터 없음" if not leads else f"D+{leads[0]}" if len(leads) == 1 else f"D+{leads[0]}~{leads[-1]}"
-        with st.container(border=True):
-            st.markdown(f"**{sup}** · {len(items)}개 품목 · 발주 {SUPPLIERS[sup].order_days_label} · 리드타임 {lead}")
-            if cur:
-                od, arr = item_schedule(items[0])
-                st.caption(f"선택: 발주 {fmt_date(cur)}" + (f" → 입고 {fmt_date(arr)}" if len(leads) == 1 else f" → 입고 {lead}"))
-            else:
-                st.warning(f"앞으로 {CAL_WEEKS}주 안에 발주 가능한 날이 없어요.", icon=":material/event_busy:")
-            head = st.columns(7)
-            for c, w in zip(head, "월화수목금토일"):
-                c.caption(f"**{w}**")
-            for wk in range(CAL_WEEKS):
-                row = st.columns(7)
-                for i, c in enumerate(row):
-                    d = start + timedelta(days=wk * 7 + i)
-                    if d < today:
-                        c.button(" ", key=f"cal_{sup}_{d:%m%d}", disabled=True, width="stretch")
-                    elif d in days:
-                        label = f"{d:%m/%d}" + (f"\n→ {(d + timedelta(days=leads[0])):%m/%d}" if len(leads) == 1 else "")
-                        c.button(label, key=f"cal_{sup}_{d:%m%d}", type="primary" if d == cur else "secondary", width="stretch",
-                                 on_click=pick_day, args=(sup, d), help=f"{fmt_date(d)} 발주")
-                    else:
-                        c.button(f"{d:%m/%d}", key=f"cal_{sup}_{d:%m%d}", disabled=True, width="stretch")
+    open_req_list()                                              # 등록하면 바로 청구 목록 창을 띄워 발주 전환으로 이어 준다
 
 
 def req_item_card(it, g, r):
@@ -295,7 +332,7 @@ def req_item_card(it, g, r):
 
 @register("po.request")
 def po_request(leaf: Leaf):
-    st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 한 번에 등록합니다. 승인되면 발주서로 전환해요.")
+    st.caption("거래처를 고르고 품목 카드에서 수량을 정해 '담기' → 오른쪽 청구 목록에서 발주일·입고일을 정하고 한 번에 등록합니다. 등록하면 청구 목록 창이 바로 열려 업체별로 확인한 뒤 발주서로 전환해요.")
     today, cal = get_today(), get_calendar()
     stock, pos = inv_state()["stock_g"], position_g()
     info = {it.name: (stock.get(it.name, 0.0), recommend(it, pos.get(it.name, 0.0), today, cal)) for it in ITEMS.values()}
@@ -306,7 +343,7 @@ def po_request(leaf: Leaf):
     labels = {f"{REQ_NEED} ({len(need)})": REQ_NEED, f"{REQ_ALL} ({len(ITEMS)})": REQ_ALL,
               **{f"{n} ({len(v)})": n for n, v in sorted(by_sup.items(), key=lambda kv: (-len(kv[1]), kv[0]))}}
 
-    main, side = st.columns([3, 1], gap="medium")
+    main, side = st.columns([5, 2], gap="medium")
     with main:
         st.markdown("##### 1. 거래처")
         names = list(labels)
@@ -351,36 +388,32 @@ def po_request(leaf: Leaf):
                 st.button("다음", icon=":material/chevron_right:", disabled=page >= pages - 1, key="req_next", on_click=lambda: ss.update(req_page=page + 1))
 
     with side:
-        with st.container(border=True):
+        with st.container(border=True, key="req-cart"):                      # 스크롤해도 따라오게 style.py 에서 고정
             cart = _cart()
-            st.markdown(f"##### 청구 목록 ({len(cart)})")
+            st.markdown(f"##### 3. 청구 목록 ({len(cart)})")
             if not cart:
-                st.caption("카드에서 '담기'를 누르면 여기에 쌓여요.")
-            for name, packs in list(cart.items()):
-                with st.container(horizontal=True, vertical_alignment="center"):
-                    od, arr = item_schedule(ITEMS[name])
-                    st.markdown(f"**{name}**  \n{ITEMS[name].supplier.name} · {qty_of(ITEMS[name], round(packs * units_of(ITEMS[name]).per, 2))}  \n"
-                                f"발주 {fmt_date(od)} → 입고 {fmt_date(arr)}")
-                    st.button("", key=f"rqx_{name}", icon=":material/close:", type="tertiary", on_click=cart_remove, args=(name,), help="목록에서 빼기")
-            st.caption("발주일·입고일은 왼쪽 아래 '3. 발주일 · 입고일' 달력에서 거래처별로 고를 수 있어요. 고르지 않으면 가장 빠른 날로 정해져요.")
+                st.caption("카드에서 '담기'를 누르면 여기에 쌓여요. 거래처별 발주일 · 입고일도 여기서 정해요.")
+            for sup in sorted({ITEMS[n].supplier.name for n in cart}):
+                items = _cart_items(sup)
+                st.markdown(f"**{sup}** · {len(items)}개 품목")
+                for it in items:
+                    with st.container(horizontal=True, vertical_alignment="center"):
+                        st.markdown(f"{it.name}  \n:gray[{qty_of(it, round(cart[it.name] * units_of(it).per, 2))}]")
+                        st.button("", key=f"rqx_{it.name}", icon=":material/close:", type="tertiary", on_click=cart_remove, args=(it.name,), help="목록에서 빼기")
+                days = sup_days(sup)
+                leads = sorted({it.lead_time_days for it in items if it.lead_time_days is not None})
+                if not days:
+                    st.warning(f"앞으로 {CAL_WEEKS}주 안에 발주 가능한 날이 없어요.", icon=":material/event_busy:")
+                    continue
+                key = f"req_day_{sup}"
+                if ss.get(key) not in days:                                    # 처음이거나 고른 날이 더는 가능하지 않으면 가장 빠른 발주일
+                    ss[key] = days[0]
+                lead = "D+" + (str(leads[0]) if len(leads) == 1 else f"{leads[0]}~{leads[-1]}") if leads else "데이터 없음"
+                st.selectbox("발주일 → 입고일", days, key=key, format_func=lambda d, ls=leads, ld=lead: fmt_date(d) + " → " + (fmt_date(d + timedelta(days=ls[0])) if len(ls) == 1 else f"입고 {ld}"),
+                             help=f"발주 가능한 날만 나와요 (발주 {SUPPLIERS[sup].order_days_label}, 리드타임 {lead}, 휴점·입고 불가일 제외).")
+                st.divider()
             st.text_input("메모", placeholder="선택", key="req_memo")
             st.button(f"청구 등록 ({len(cart)}건)", type="primary", icon=":material/add:", width="stretch", disabled=not cart, on_click=cart_submit)
-
-    with main:
-        schedule_calendar()
-
-    st.subheader("청구 목록")
-    reqs = ss.purchase_requests
-    if not reqs:
-        st.caption("등록된 구매청구가 없어요.")
-    for r in reversed(reqs):
-        with st.container(border=True):
-            left, right = st.columns([5, 1], vertical_alignment="center")
-            left.markdown(f"**{r['청구번호']}** · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])} · {r['거래처']} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}")
-            if r["상태"] == "청구":
-                right.button("발주 전환", key=f"cv_{r['청구번호']}", on_click=convert_to_po, args=(r["청구번호"],))
-            else:
-                right.caption(r["상태"])
 
 
 @register("po.request_detail")
@@ -422,29 +455,51 @@ def po_leadtime(leaf: Leaf):
         st.info("검색 결과가 없습니다. 품목명이나 거래처 이름을 바꿔 보세요.", icon=":material/search_off:")
 
 
+def rec_row(item, g, r):
+    """우선 처리 한 줄: 상태·품목·재고·잔여일·발주→입고·추천 수량·청구 버튼. 카드(rec_card)보다 낮아서 한 화면에 여러 개가 보인다."""
+    with st.container(border=True):
+        c_name, c_stock, c_when, c_qty, c_btn = st.columns([5, 2, 4, 2, 3], vertical_alignment="center")
+        with c_name:
+            with st.container(horizontal=True, vertical_alignment="center"):
+                status_badge(r.status)
+                st.markdown(f"**{item.name}**")
+            st.caption(f"{item.supplier.name} · {r.message}")
+        coming = on_order_g().get(item.name, 0.0)
+        c_stock.markdown(f"재고 **{stock_of(item, g)}**" + (f"  \n:gray[오는 중 {stock_of(item, coming)}]" if coming else ""))
+        c_when.markdown(f"{fmt_date(r.order_date)} 발주 → {fmt_date(r.arrival_date)} 입고" + (f"  \n:gray[잔여 {r.days_left:.1f}일 · 소진 {fmt_date(r.stockout_date)}]" if r.days_left is not None else ""))
+        c_qty.markdown(f"추천 **{qty_of(item, r.order_packs)}**")
+        c_btn.button("구매청구 만들기", key=f"mkreq_{item.name}", icon=":material/add_shopping_cart:", width="stretch",
+                     on_click=add_request, args=(item.name, r.order_packs, r.arrival_date, "자동 발주 추천"))
+
+
 @register("po.auto")
 def po_auto(leaf: Leaf):
-    show_all = dormant_toggle("po_auto_dormant")
+    short = stock_note_short()
+    with st.expander(short or f"'{get_store()}' 현재 재고 기준이에요", icon=":material/info:"):
+        if short:
+            st.markdown(stock_note())
+        st.markdown(f"'{get_store()}' 현재 재고 기준입니다. 실제 재고는 '매장별 재고입력'에서 바꿀 수 있어요.")
+    c_state, c_tg = st.columns([7, 3], vertical_alignment="center")
+    with c_tg:
+        show_all = dormant_toggle("po_auto_dormant", "활동 없는 품목도 보기")
     results, hidden = only_active(current_results(), show_all)
     n = {s: sum(r.status == s for _, _, r in results) for s in STATUS}
-    kpis([("긴급", f"{n['URGENT']}개", None), ("발주 필요", f"{n['ORDER_NOW'] + n['ORDER_SOON']}개", None),
-          ("양호", f"{n['OK'] + n['NO_USAGE']}개", None), ("데이터 없음", f"{n['NO_DATA']}개", None)])
-    st.caption(f"'{get_store()}' 현재 재고 기준입니다. 실제 재고는 '매장별 재고입력'에서 바꿀 수 있어요.")
+    with c_state:
+        status_badges(n)
     if hidden:
-        st.caption(f":material/visibility_off: 활동 있는 품목 {len(results)}개만 보고 있어요. 숨긴 품목 {hidden}개는 최근 {activity.DORMANT_DAYS}일 입고·청구가 없고 발주도 필요 없는 품목이에요 (위 스위치로 볼 수 있어요).")
-    if note := stock_note():
-        st.info(note, icon=":material/query_stats:")
-    st.subheader("우선 처리")
+        st.caption(f":material/visibility_off: 활동 있는 품목 {len(results)}개만 보고 있어요. 숨긴 품목 {hidden}개는 최근 {activity.DORMANT_DAYS}일 입고·청구가 없고 발주도 필요 없는 품목이에요.")
     todo = [(it, g, r) for it, g, r in results if r.status in ACTION]
-    if not todo:
-        st.success("지금 발주할 품목이 없습니다.", icon=":material/check_circle:")
+    c_head, c_bulk = st.columns([6, 3], vertical_alignment="center")
+    c_head.subheader(f"우선 처리 ({len(todo)}개)")
     if todo:
-        st.button(f"위 {len(todo)}개 전체 구매청구 만들기", icon=":material/add_shopping_cart:", on_click=add_requests_bulk, args=(todo,),
-                  help="우선 처리 품목을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다.")
+        c_bulk.button(f"위 {len(todo)}개 전체 구매청구 만들기", icon=":material/add_shopping_cart:", type="primary", on_click=add_requests_bulk, args=(todo,), width="stretch",
+                      help="우선 처리 품목을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다.")
+    else:
+        st.success("지금 발주할 품목이 없습니다.", icon=":material/check_circle:")
     for it, g, r in todo[:MAX_CARDS]:
-        rec_card(it, g, r, request_button=True)
+        rec_row(it, g, r)
     if len(todo) > MAX_CARDS:
-        st.caption(f"급한 순서로 {MAX_CARDS}개만 카드로 보여줘요. 나머지 {len(todo) - MAX_CARDS}개는 아래 '전체 품목 현황' 표에서 확인하세요 "
+        st.caption(f"급한 순서로 {MAX_CARDS}개만 보여줘요. 나머지 {len(todo) - MAX_CARDS}개는 아래 '전체 품목 현황' 표에서 확인하세요 "
                    "(상태 순으로 정렬돼 있어요).")
 
     st.subheader("전체 품목 현황")
@@ -533,41 +588,50 @@ def add_engine_requests(reqs: list):
 
 @register("po.engine")
 def po_engine(leaf: Leaf):
-    st.caption("거래처 청구·입고 이력(2024~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
-               "월말 실사재고(수불부)가 있으면 재고를 추정해 참고로 보여 주고, 주문 간격이 길어 습관으로 판단할 수 없는 품목은 재고로 판단합니다.")
     has_data = (reorder_engine.DATA / "2026" / "구매청구_정제.csv").exists()
     if get_store() != sales_data.STORE or not has_data:
         st.info(f"이력 기반 발주 추천은 실제 청구·입고 이력이 있는 '{sales_data.STORE}'에서만 제공합니다.", icon=":material/info:")
         return
     stamp = _engine_stamp()
     e = _engine(stamp)
-    day = st.date_input("기준일 (발주하는 날)", value=get_today(), key="po_engine_day")
-    if day > e.last + timedelta(days=3):
-        st.warning(f"매출·발주 자료가 {e.last:%Y-%m-%d}까지라, {(day - e.last).days}일 뒤 날짜는 최근 주문 이력이 빠져 결과가 부정확합니다. "
+    c_day, c_state = st.columns([3, 7], vertical_alignment="bottom")
+    day = c_day.date_input("기준일 (발주하는 날)", value=get_today(), key="po_engine_day")
+    if day > e.data_end + timedelta(days=3):
+        st.warning(f"구매청구 자료가 {e.data_end:%Y-%m-%d}까지라, {(day - e.data_end).days}일 뒤 날짜는 최근 주문 이력이 빠져 결과가 부정확합니다. "
                    "구매청구·일자별 매출을 갱신한 뒤 모델을 다시 학습해 주세요 (python reorder_engine.py --fit).", icon=":material/warning:")
     status, why = store_calendar.status(day)
     if status != "영업":
         st.caption(f":material/event: {day:%m/%d} {status}{f' · {why}' if why else ''}")
     t = _engine_table(day, stamp)
     counted = e.latest_count(day)
+    n_ref = int(t["재고"].notna().sum())
     if counted is None:
-        st.caption(":material/inventory_2: 재고 반영 없음 — 월말 실사재고 자료가 없습니다.")
+        stock_line, stock_more = "재고 반영 없음 — 월말 실사재고 자료가 없습니다.", ""
+    elif (day - counted).days > reorder_engine.STALE_DAYS and n_ref:
+        stock_line = f"재고는 실사 대신 시뮬레이션 재고를 참고로 보여 줍니다 ({n_ref}개 품목)"
+        stock_more = (f"최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 실사 추정 대신 시뮬레이션 재고를 참고로 보여 줍니다. "
+                      "발주할 시점 판단에는 쓰지 않고 '재고 넉넉' 주의와 '재고 확인' 품목의 근거에만 씁니다 (시뮬레이션 재고로 판정하면 맞은 비율이 낮아서).")
     elif (day - counted).days > reorder_engine.STALE_DAYS:
-        n_ref = int(t["재고"].notna().sum())
-        if n_ref:
-            st.caption(f":material/inventory_2: 최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 실사 추정 대신 시뮬레이션 재고를 참고로 보여 줍니다 ({n_ref}개 품목). "
-                       "발주할 시점 판단에는 쓰지 않고 '재고 넉넉' 주의와 '재고 확인' 품목의 근거에만 씁니다 (시뮬레이션 재고로 판정하면 맞은 비율이 낮아서).")
-        else:
-            st.caption(f":material/inventory_2: 최근 월말 실사는 {counted:%Y-%m-%d}({(day - counted).days}일 전)라 재고 추정은 쓰지 않았습니다 "
-                       f"(실사 후 {reorder_engine.STALE_DAYS}일 안에만 반영). 시뮬레이션 예측이 없는 날짜입니다.")
+        stock_line = f"재고 추정은 쓰지 않았어요 (최근 월말 실사 {counted:%Y-%m-%d}, {(day - counted).days}일 전)"
+        stock_more = f"실사 후 {reorder_engine.STALE_DAYS}일 안에만 반영합니다. 시뮬레이션 예측이 없는 날짜입니다."
     else:
-        st.caption(f":material/inventory_2: {counted:%Y-%m-%d} 월말 실사 + 그 뒤 입고 − 예상 소비로 재고를 추정했습니다 ({int(t['재고'].notna().sum())}개 품목).")
+        stock_line = f"{counted:%Y-%m-%d} 월말 실사 + 그 뒤 입고 − 예상 소비로 재고를 추정했어요 ({n_ref}개 품목)"
+        stock_more = ""
+    with st.expander(stock_line, icon=":material/inventory_2:"):
+        if stock_more:
+            st.markdown(stock_more)
+        st.markdown("거래처 청구·입고 이력(2024~2026)과 매출 예측으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. "
+                    "월말 실사재고(수불부)가 있으면 재고를 추정해 참고로 보여 주고, 주문 간격이 길어 습관으로 판단할 수 없는 품목은 재고로 판단합니다.")
     orders = t[t["상태"] == "발주"].sort_values(["거래처", "확률"], ascending=[True, False])
     n_season, n_check = int((t["상태"] == "시즌 시작 예상").sum()), int((t["상태"] == "재고 확인").sum())
-    kpis([("발주 추천", f"{len(orders)}건", None), ("거래처", f"{orders['거래처'].nunique()}곳", None),
-          ("시즌 시작 예상", f"{n_season}건", None), ("재고 확인 필요", f"{n_check}건", None)])
+    with c_state:
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.badge(f"발주 추천 {len(orders)}건", color="blue" if len(orders) else "gray")
+            st.badge(f"거래처 {orders['거래처'].nunique()}곳", color="gray")
+            st.badge(f"시즌 시작 예상 {n_season}건", color="gray")
+            st.badge(f"재고 확인 필요 {n_check}건", color="orange" if n_check else "gray")
 
-    st.subheader("오늘 발주 추천")
+    st.subheader(f"오늘 발주 추천 ({len(orders)}건)")
     if orders.empty:
         n_day, n_wait = int((t["상태"].isin(["발주", "보류", "재고 확인"])).sum()), int((t["상태"] == "보류").sum())
         if n_day == 0:
@@ -575,7 +639,8 @@ def po_engine(leaf: Leaf):
         else:
             st.success(f"{day:%m/%d} 발주 가능한 정기 품목 {n_day}개 중 지금 발주할 시점인 품목은 없습니다 ({n_wait}개는 아직 이른 상태).", icon=":material/check_circle:")
     else:
-        pick = st.multiselect("거래처", sorted(orders["거래처"].unique()), default=sorted(orders["거래처"].unique()), key="po_engine_sup")
+        c_pick, c_bulk = st.columns([7, 3], vertical_alignment="center")
+        pick = c_pick.multiselect("거래처", sorted(orders["거래처"].unique()), default=sorted(orders["거래처"].unique()), key="po_engine_sup", label_visibility="collapsed")
         o = orders[orders["거래처"].isin(pick)]
         reqs, missing = engine_requests(o)
         by_code = {it.code: it.name for it in ITEMS.values() if it.code}
@@ -588,8 +653,8 @@ def po_engine(leaf: Leaf):
             "예상 재고": [_qty(round(r, 1), u) if pd.notna(r) else "" for r, u in zip(o["재고"], o["단위"])], "재고 주의": o["재고주의"],
             "발주 확률": (o["확률"] * 100).round(), "시즌": o["시즌"], "근거": o["사유"]})
         view_cols = [c for c in df.columns if c not in ("거래처", "근거")]
-        st.button(f"구매청구 만들기 ({len(reqs)}건)", icon=":material/add_shopping_cart:", on_click=add_engine_requests, args=(reqs,), disabled=not reqs,
-                  help="선택한 모든 거래처의 추천을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다. 업체별로 만들려면 아래 각 거래처의 버튼을 누르세요.")
+        c_bulk.button(f"구매청구 만들기 ({len(reqs)}건)", icon=":material/add_shopping_cart:", type="primary", width="stretch", on_click=add_engine_requests, args=(reqs,), disabled=not reqs,
+                      help="선택한 모든 거래처의 추천을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다. 업체별로 만들려면 아래 각 거래처의 버튼을 누르세요.")
         cols = {"발주 확률": st.column_config.ProgressColumn("발주 확률", min_value=0, max_value=100, format="%d%%",
                                                           help="이 품목을 오늘 발주할 가능성. 평소 주문 주기와 마지막 주문 후 경과일로 계산"),
                 "상한": st.column_config.TextColumn(help="평소보다 많이 팔릴 때를 대비한 여유 수량(25% 더)")}
@@ -824,14 +889,99 @@ def stock_flow(leaf: Leaf):
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="최근 7일 수불현황")
 
 
+CATEGORY_ORDER = {"원재료": 0, "반제품": 1, "포장재료": 2, "저장품": 3}   # 입력 표의 분류 순서: 먼저 세는 것부터
+ENTRY_COLUMNS = ["품목", "BOX", "PK", "낱개", "합계", "확인", "환산 기준"]
+ENTRY_CONFIG = {
+    "품목": st.column_config.TextColumn("품목", width=150, pinned=True),
+    "BOX": st.column_config.NumberColumn("BOX", min_value=0, format="%g", width="small", help="박스 수"),
+    "PK": st.column_config.NumberColumn("PK", min_value=0, format="%g", width="small", help="팩 수 (소수로 입력해도 돼요)"),
+    "낱개": st.column_config.NumberColumn("낱개", min_value=0, format="%g", width="small",
+                                        help="PK로 채우지 못한 낱개. 품목의 기본단위(g·ml·개 등)로 입력하세요 — 맨 오른쪽 '환산 기준'에 적혀 있어요."),
+    "합계": st.column_config.TextColumn("합계", width="medium", help="BOX·PK·낱개를 합친 환산 결과. 입력하면 바로 바뀌어요."),
+    "확인": st.column_config.TextColumn("확인", width="medium", help="추정값 그대로인지, 직접 입력했는지, 이상한 값인지 알려 줘요. 0으로 입력했거나, 추정의 3배 이상·1/3 이하이거나, 소비 60일치를 넘으면 '확인 필요'."),
+    "환산 기준": st.column_config.TextColumn("환산 기준", width="medium", help="이 품목의 1PK·1BOX가 얼마인지, 낱개를 무슨 단위로 세는지"),
+}
+
+
+def convert_basis(it) -> str:
+    """환산 기준 한 줄: '1PK=20kg · 1BOX=4PK · 낱개=g'. 낱개 수로 세는 품목(1PK=1개)은 '낱개=개'만."""
+    if it.base_unit not in ("g", "ml") and it.pk_weight_g == 1 and it.box_pk == 1:
+        return f"낱개={it.base_unit}"
+    return f"1PK={it.fmt(it.pk_weight_g)}" + (f" · 1BOX={it.box_pk:g}PK" if it.box_pk > 1 else "") + f" · 낱개={it.base_unit}"
+
+
+CHECK_RATIO = 3   # 입력이 추정값의 이 배수 이상이거나 1/이 배수 이하이면 확인 필요
+CHECK_DAYS = 60   # 입력이 하루 소비량의 이 일수치를 넘으면 확인 필요 (자릿수 실수: 20 대신 200)
+CHECK_BIG = {"g": 500_000, "ml": 500_000}   # 소비량을 몰라도 매장 한 품목이 이 양(500kg·500L, 개수는 5만 개)을 넘을 수는 없다
+CHECK_BIG_COUNT = 50_000
+
+
+def entry_check(it, now, base) -> str:
+    """입력 행의 확인 문구. now·base = (BOX, PK, 낱개): base 는 화면을 열 때의 추정값. 확인이 필요한 행은 '확인 필요'로 시작한다.
+    같으면 '추정값', 직접 바꿨으면 '입력함', 0으로 입력했거나 소비 60일치를 넘거나 추정과 크게(3배 이상, 1PK 이상 차이) 다르면 '확인 필요 · …'."""
+    try:
+        g, g0 = to_grams(it, now[1], now[2], boxes=now[0]), to_grams(it, base[1], base[2], boxes=base[0])
+    except InvalidInputError:
+        return "확인 필요 · 입력 확인"
+    if g == g0:
+        return "추정값"
+    if g == 0:
+        return "확인 필요 · 0으로 입력"
+    if g > g0 and it.usage_known and it.daily_usage_g > 0 and g > CHECK_DAYS * it.daily_usage_g:
+        return f"확인 필요 · 소비 {g / it.daily_usage_g:.0f}일치"
+    if g > g0 and g > CHECK_BIG.get(it.base_unit, CHECK_BIG_COUNT):
+        return "확인 필요 · 너무 큰 값"
+    if g0 > 0 and abs(g - g0) >= it.pk_weight_g:
+        if g >= g0 * CHECK_RATIO:
+            return f"확인 필요 · 추정의 {g / g0:.0f}배"
+        if g * CHECK_RATIO <= g0:
+            return f"확인 필요 · 추정의 1/{g0 / g:.0f}"
+    return "입력함"
+
+
+def entry_total(it, box, pk, loose) -> str:
+    """입력한 BOX·PK·낱개의 환산 합계: '48.3kg = 2.42팩' (무게·부피 품목) 또는 '24개'. 값이 비었거나 음수면 '입력 확인'."""
+    try:
+        g = to_grams(it, pk, loose, boxes=box)
+    except InvalidInputError:
+        return "입력 확인"
+    if g == 0:
+        return "0"
+    return f"{it.fmt(g)} = {stock_of(it, g)}" if it.base_unit in ("g", "ml") else stock_of(it, g)
+
+
+def status_badges(n: dict, extra: list | None = None):
+    """긴급·발주 필요·양호·데이터 없음 배지 한 줄 (n = 상태별 개수). 개수가 0이면 회색. extra = [(문구, 색, 아이콘)]."""
+    with st.container(horizontal=True, vertical_alignment="center"):
+        for label, count, color in (("긴급", n["URGENT"], "red"), ("발주 필요", n["ORDER_NOW"] + n["ORDER_SOON"], "orange"),
+                                    ("양호", n["OK"] + n["NO_USAGE"], "gray"), ("데이터 없음", n["NO_DATA"], "gray")):
+            st.badge(f"{label} {count}", color=color if count else "gray")
+        for text, color, icon in extra or []:
+            st.badge(text, color=color, icon=icon)
+
+
+def table_signature(table: pd.DataFrame) -> int:
+    """입력 표의 내용을 한 숫자로 (저장한 뒤 바뀌었는지 비교)."""
+    return int(pd.util.hash_pandas_object(table, index=True).sum())
+
+
 def stock_editor():
-    """실사 재고 파일 업로드 + 입력 표. (품목, 총 g, 추천) 결과를 반환하고 현재 매장의 stock_g를 갱신."""
+    """실사 재고 입력 화면: 기준 안내 · 필터 · 진행 상태 · 입력 표. (품목, 총 g, 추천) 결과를 반환하고 현재 매장의 stock_g를 갱신."""
     s = inv_state()
-    with st.expander("실사 재고 파일로 불러오기 (엑셀 · CSV · JSON · 텍스트)", icon=":material/upload_file:"):
-        up_col, tpl_col = st.columns([3, 1], vertical_alignment="bottom")
-        up = up_col.file_uploader("파일 선택", type=["csv", "tsv", "txt", "md", "json", "xlsx", "xls", "ods"],
-                                  label_visibility="collapsed", key=f"inv_up_{get_store()}")
-        tpl_col.download_button("양식 받기 (CSV)", TEMPLATE_CSV, "실사재고_양식.csv", "text/csv", icon=":material/download:")
+    short = stock_note_short()
+    with st.expander(short or "입력 방법", icon=":material/info:"):
+        if short:
+            st.markdown(stock_note())
+        st.markdown("**BOX · PK · 낱개**를 직접 고치면 바로 환산돼요. **낱개**는 PK로 채우지 못한 양을 품목의 기본단위(g·ml·개·장·롤 등)로 입력하고, "
+                    "BOX·PK 입수는 품목 마스터 기준으로 자동 환산돼요. 표의 '환산 기준' 열에 품목마다 적혀 있어요.")
+    table = s["table"]
+    c_cat, c_q, c_up = st.columns([5, 4, 2], vertical_alignment="center")
+    cat = c_cat.pills("분류", ["전체", *dict.fromkeys(table["분류"])], default="전체", key="inv_cat", label_visibility="collapsed") or "전체"
+    q = c_q.text_input("품목 검색", placeholder="품목명 또는 코드로 찾기", key="inv_q", icon=":material/search:", label_visibility="collapsed").strip()
+    with c_up.popover("파일로 불러오기", icon=":material/upload_file:", width="stretch"):
+        up = st.file_uploader("실사 재고 파일 (엑셀 · CSV · JSON · 텍스트)", type=["csv", "tsv", "txt", "md", "json", "xlsx", "xls", "ods"],
+                              key=f"inv_up_{get_store()}")
+        st.download_button("양식 받기 (CSV)", TEMPLATE_CSV, "실사재고_양식.csv", "text/csv", icon=":material/download:")
         if up is not None:
             try:
                 imp = parse_inventory_file(up.name, up.getvalue(), ITEMS)
@@ -850,32 +1000,40 @@ def stock_editor():
                     s["table"] = build_table(imp.grams)
                     s["ver"] += 1
                     s["applied"] = up.file_id
+                    table = s["table"]
                 st.success(f"{len(imp.grams)}개 품목을 불러왔습니다. 아래 표에서 수정할 수 있습니다.")
-
-    st.markdown(f"**실사 재고 입력 · {get_store()}**")
-    if note := stock_note():
-        st.info(note, icon=":material/query_stats:")
-    st.caption("BOX·PK·낱개 값을 직접 수정하면 즉시 반영됩니다. 낱개는 품목의 기본단위(g·ml·개·장·롤 등)로 입력하고, "
-               "BOX/PK 입수는 품목 마스터 기준으로 자동 환산됩니다.")
-    table = s["table"]
-    f_cat, f_q = st.columns([3, 2], vertical_alignment="bottom")
-    cat = f_cat.pills("분류", ["전체", *dict.fromkeys(table["분류"])], default="전체", key="inv_cat") or "전체"
-    q = f_q.text_input("품목 검색", placeholder="품목명 또는 코드", key="inv_q", icon=":material/search:").strip()
+    c_view, c_tg = st.columns([5, 4], vertical_alignment="center")
+    which = c_view.segmented_control("보기", ["전체", "아직 안 센 품목", "확인 필요"], default="전체", key="inv_view", label_visibility="collapsed") or "전체"
+    with c_tg:
+        show_all = dormant_toggle("stock_input_dormant", "활동 없는 품목도 보기")
+    codes = active_codes()
+    seed = s["seed"][1]                                                # 화면을 열 때의 추정값 (입력과 비교하는 기준)
+    checks = {i: entry_check(ITEMS[n], (b, p, l), (seed.at[i, "BOX"], seed.at[i, "PK"], seed.at[i, "낱개"]))
+              for i, n, b, p, l in zip(table.index, table["품목"], table["BOX"], table["PK"], table["낱개"])}
+    universe = table.index if codes is None or show_all else table.index[table["품목코드"].isin(codes)]    # 진행률의 분모: 화면에 보이는 품목 전체
     mask = pd.Series(True, index=table.index)
     if cat != "전체":
         mask &= table["분류"] == cat
-    codes = active_codes()
-    show_all = dormant_toggle("stock_input_dormant")
     if q:
         mask &= table["품목"].str.contains(q, case=False, regex=False) | table["품목코드"].str.contains(q, case=False, regex=False)    # 검색하면 활동 없는 품목도 찾는다
     elif codes is not None and not show_all:
         mask &= table["품목코드"].isin(codes)
-    view = table[mask]
-    edited = st.data_editor(view, hide_index=True, disabled=["품목코드", "품목", "분류", "단위"], width="stretch",
-                            key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}", alt="품목별 실사 재고 입력 표")
+    if which == "아직 안 센 품목":
+        mask &= pd.Series([checks[i] == "추정값" for i in table.index], index=table.index)
+    elif which == "확인 필요":
+        mask &= pd.Series([checks[i].startswith("확인 필요") for i in table.index], index=table.index)
+    view = table[mask].sort_values("분류", key=lambda c: c.map(CATEGORY_ORDER).fillna(len(CATEGORY_ORDER)), kind="stable")    # 식재료(원재료·반제품)를 먼저, 집기·소모품은 뒤로
+    status = st.container()                                              # 진행·상태·저장 줄: 아래 표와 결과를 계산한 뒤 채운다 (표 위에 놓기 위해)
+    shown = view.assign(**{"환산 기준": [convert_basis(ITEMS[n]) for n in view["품목"]],
+                           "합계": [entry_total(ITEMS[n], b, p, l) for n, b, p, l in zip(view["품목"], view["BOX"], view["PK"], view["낱개"])],
+                           "확인": [checks[i] for i in view.index]})
+    edited = st.data_editor(shown, hide_index=True, width="stretch", alt="품목별 실사 재고 입력 표", key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}_{which}",
+                            disabled=["품목코드", "품목", "분류", "단위", "합계", "확인", "환산 기준"], column_order=ENTRY_COLUMNS, column_config=ENTRY_CONFIG)
     t = table.copy()   # 보이는 행의 수정값만 전체 표에 반영 (필터로 가려진 행은 그대로)
     t.loc[edited.index, ["BOX", "PK", "낱개"]] = edited[["BOX", "PK", "낱개"]]
     s["table"] = t
+    if not edited[["BOX", "PK", "낱개"]].fillna(-1).equals(view[["BOX", "PK", "낱개"]].fillna(-1)):
+        st.rerun()   # 방금 고친 행의 환산 합계가 바로 보이도록 한 번 더 그린다 (표시 열은 저장된 값으로 계산하므로)
     st.caption(f"{len(view)}개 표시 / 전체 {len(table)}개" + (f" — 최근 {activity.DORMANT_DAYS}일 입고·청구가 있었던 품목만 보고 있어요 (위 스위치나 검색으로 나머지도 볼 수 있어요)" if codes is not None and not show_all and not q else ""))
 
     today, cal = get_today(), get_calendar()
@@ -884,24 +1042,44 @@ def stock_editor():
     results = [(ITEMS[n], g, recommend(ITEMS[n], g, today, cal)) for n, g in stock.items()]
     for name_, msg in errors:
         st.error(f"{name_}: {msg}")
-    return sorted(results, key=lambda x: STATUS_ORDER[x[2].status]), errors
+    results = sorted(results, key=lambda x: STATUS_ORDER[x[2].status])
+    shown_results, _ = only_active(results, show_all)                    # 상태 숫자도 표와 같은 품목 범위로
+    n = {k: sum(r.status == k for _, _, r in shown_results) for k in STATUS}
+    n_in = sum(checks[i] != "추정값" for i in universe)
+    n_check = sum(checks[i].startswith("확인 필요") for i in universe)
+    sig = table_signature(t)
+    saved = ss.get("inv_saved", {}).get(get_store())
+    with status:
+        c_prog, c_state, c_save = st.columns([4, 6, 2], vertical_alignment="center")
+        c_prog.progress(n_in / max(1, len(universe)), text=f"직접 센 품목 {n_in} / {len(universe)}개")
+        with c_state:
+            status_badges(n, ([(f"확인 필요 {n_check}", "orange", ":material/error:")] if n_check else []) + ([(f"입력 오류 {len(errors)}", "red", ":material/error:")] if errors else []))
+        with c_save:
+            st.button("이력에 저장", icon=":material/save:", type="primary", key="inv_save", on_click=save_snapshot, width="stretch",
+                      help="현재 입력값을 '매장별 재고입력 이력'에 남깁니다.")
+        if saved and saved[0] == sig:
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.caption(f":material/check_circle: {saved[1]}에 저장했어요.")
+                if "po-auto" in routing.PAGES:                              # 저장하면 다음에 할 일로 바로 가는 길 (앱 안에서만; 테스트 화면에는 페이지 목록이 없다)
+                    st.page_link(routing.PAGES["po-auto"], label=f"긴급 {n['URGENT']}개 확인하기" if n["URGENT"] else "발주 추천 보기", icon=":material/arrow_forward:")
+                if "po-engine" in routing.PAGES:
+                    st.page_link(routing.PAGES["po-engine"], label="이력 기반 발주 추천", icon=":material/arrow_forward:")
+        elif n_in:
+            st.caption(":material/edit_note: 저장하지 않은 입력이 있어요. 끝나면 '이력에 저장'을 눌러 주세요." + (f" (마지막 저장 {saved[1]})" if saved else ""))
+    return results, errors
 
 
 def save_snapshot():
     s = inv_state()
-    ss.inv_history = [*ss.inv_history, {"저장시각": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"), "매장": get_store(),
-                                        "표": s["table"].copy()}]
+    now = pd.Timestamp.now()
+    ss.inv_history = [*ss.inv_history, {"저장시각": now.strftime("%Y-%m-%d %H:%M"), "매장": get_store(), "표": s["table"].copy()}]
+    ss.inv_saved = {**ss.get("inv_saved", {}), get_store(): (table_signature(s["table"]), now.strftime("%H:%M"))}   # 저장한 뒤 바뀌었는지 알리려고
     st.toast("현재 실사 재고를 이력에 저장했어요.", icon=":material/check_circle:")
 
 
 @register("stock.input")
 def stock_input(leaf: Leaf):
-    results, errors = stock_editor()
-    st.button("이력에 저장", icon=":material/save:", type="primary", on_click=save_snapshot,
-              help="현재 입력값을 '매장별 재고입력 이력'에 남깁니다.")
-    n = {s: sum(r.status == s for _, _, r in results) for s in STATUS}
-    kpis([("긴급", f"{n['URGENT']}개", None), ("발주 필요", f"{n['ORDER_NOW'] + n['ORDER_SOON']}개", None),
-          ("양호", f"{n['OK'] + n['NO_USAGE']}개", None), ("데이터 없음", f"{n['NO_DATA']}개", None), ("입력 오류", f"{len(errors)}개", None)])
+    stock_editor()
     with st.expander("품목 하나만 빠르게 확인", icon=":material/search:"):
         name = st.selectbox("품목", list(ITEMS), key="quick_item")
         item = ITEMS[name]
