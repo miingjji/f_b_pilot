@@ -11,3 +11,6 @@ __pycache__/
 # e2e 샌드박스 라이브러리 (e2e/setup_sandbox_libs.sh 가 생성)
 .e2e-env/
 
+
+# Impeccable 라이브 모드 임시 파일
+.impeccable/live/
