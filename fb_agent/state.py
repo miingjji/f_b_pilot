@@ -6,7 +6,7 @@ import streamlit as st
 import store_calendar
 from config import default_today
 from data import DEFAULT_CALENDAR, ITEMS
-from insights import build_table, master_stock_g, recommendations, sim_on_order, sim_stock_note, stock_from_table
+from insights import build_table, master_stock_g, recommendations, sim_on_order, sim_stock, sim_stock_note, stock_from_table
 from menu import STORES
 from models import StoreCalendar
 from viewport import is_mobile, viewport
@@ -29,6 +29,7 @@ def init_state():
     ss.cfg_today = None                 # None이면 실제 오늘
     ss.cfg_closed_wd = sorted(DEFAULT_CALENDAR.closed_weekdays)
     ss.cfg_show_dormant = False         # 품목 목록에 최근 45일 입고·청구가 없는 품목도 보일지
+    ss.inv_saved = {}                   # 매장별 (마지막으로 저장한 입력 표의 지문, 저장 시각)
     ss.cfg_closed_dates = sorted(d for d in store_calendar.closures() if d >= today - timedelta(days=7))   # 확정 휴점일 (신정·설·추석 전날과 당일, 무매출일, 입력한 휴점일)
     ss.events = []                      # 직접 추가한 일정 (현재 세션에만 저장)
     ss.sel_day = today
@@ -81,6 +82,16 @@ def position_g() -> dict:
     s = inv_state()
     oo = on_order_g()
     return {n: g + oo.get(n, 0.0) for n, g in s["stock_g"].items()}
+
+
+def stock_note_short() -> str:
+    """재고가 시뮬레이션 값 그대로일 때 한 문장 요약 (자세한 설명은 stock_note). 아니면 빈 문자열."""
+    s = inv_state()
+    info = sim_stock(s["seed"][0])[1] if _simulated(s) else None
+    if info is None:
+        return ""
+    f = lambda d: f"{d.month}월 {d.day}일"
+    return f"재고는 {f(info['origin'])} 실사에서 {f(info['asof'])}까지 계산한 추정값이에요 (오차 약 31%). 직접 센 값을 넣으면 그 값을 써요."
 
 
 def stock_note() -> str:

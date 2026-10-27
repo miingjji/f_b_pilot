@@ -21,7 +21,7 @@ from menu import STORES, Leaf
 from models import fmt_amount
 from order_units import UNIT_SHORT, WHOLE_UNITS, packs_for
 from reorder import fmt_date, is_order_day, order_days, recommend, safety_stock
-from state import get_calendar, get_store, get_today, inv_state, on_order_g, position_g, stock_note
+from state import get_calendar, get_store, get_today, inv_state, on_order_g, position_g, stock_note, stock_note_short
 from unit_info import display_unit, qty_for, qty_of, stock_of, unit_name, units_of
 from views import register
 from views.common import kpis
@@ -63,9 +63,9 @@ def active_codes() -> frozenset | None:
     return _active_codes(activity.stamp()) or None
 
 
-def dormant_toggle(key: str) -> bool:
+def dormant_toggle(key: str, label: str | None = None) -> bool:
     """'활동 없는 품목도 보기' 스위치. 선택은 화면을 옮겨도 유지한다(cfg_show_dormant)."""
-    on = st.toggle(f"최근 {activity.DORMANT_DAYS}일 입고·청구가 없는 품목도 보기", value=ss.get("cfg_show_dormant", False), key=key,
+    on = st.toggle(label or f"최근 {activity.DORMANT_DAYS}일 입고·청구가 없는 품목도 보기", value=ss.get("cfg_show_dormant", False), key=key,
                    help=f"기본은 최근 {activity.DORMANT_DAYS}일 안에 입고나 구매청구가 있었던 품목과 발주가 필요한 품목만 보여줍니다. 몇 달에 한 번 사는 집기·유니폼, 쓰지 않는 품목은 숨겨져요.")
     ss.cfg_show_dormant = on
     return on
@@ -824,6 +824,7 @@ def stock_flow(leaf: Leaf):
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="최근 7일 수불현황")
 
 
+CATEGORY_ORDER = {"원재료": 0, "반제품": 1, "포장재료": 2, "저장품": 3}   # 입력 표의 분류 순서: 먼저 세는 것부터
 ENTRY_COLUMNS = ["품목", "BOX", "PK", "낱개", "합계", "확인", "환산 기준"]
 ENTRY_CONFIG = {
     "품목": st.column_config.TextColumn("품목", width=150, pinned=True),
@@ -884,14 +885,28 @@ def entry_total(it, box, pk, loose) -> str:
     return f"{it.fmt(g)} = {stock_of(it, g)}" if it.base_unit in ("g", "ml") else stock_of(it, g)
 
 
+def table_signature(table: pd.DataFrame) -> int:
+    """입력 표의 내용을 한 숫자로 (저장한 뒤 바뀌었는지 비교)."""
+    return int(pd.util.hash_pandas_object(table, index=True).sum())
+
+
 def stock_editor():
-    """실사 재고 파일 업로드 + 입력 표. (품목, 총 g, 추천) 결과를 반환하고 현재 매장의 stock_g를 갱신."""
+    """실사 재고 입력 화면: 기준 안내 · 필터 · 진행 상태 · 입력 표. (품목, 총 g, 추천) 결과를 반환하고 현재 매장의 stock_g를 갱신."""
     s = inv_state()
-    with st.expander("실사 재고 파일로 불러오기 (엑셀 · CSV · JSON · 텍스트)", icon=":material/upload_file:"):
-        up_col, tpl_col = st.columns([3, 1], vertical_alignment="bottom")
-        up = up_col.file_uploader("파일 선택", type=["csv", "tsv", "txt", "md", "json", "xlsx", "xls", "ods"],
-                                  label_visibility="collapsed", key=f"inv_up_{get_store()}")
-        tpl_col.download_button("양식 받기 (CSV)", TEMPLATE_CSV, "실사재고_양식.csv", "text/csv", icon=":material/download:")
+    short = stock_note_short()
+    with st.expander(short or "입력 방법", icon=":material/info:"):
+        if short:
+            st.markdown(stock_note())
+        st.markdown("**BOX · PK · 낱개**를 직접 고치면 바로 환산돼요. **낱개**는 PK로 채우지 못한 양을 품목의 기본단위(g·ml·개·장·롤 등)로 입력하고, "
+                    "BOX·PK 입수는 품목 마스터 기준으로 자동 환산돼요. 표의 '환산 기준' 열에 품목마다 적혀 있어요.")
+    table = s["table"]
+    c_cat, c_q, c_up = st.columns([5, 4, 2], vertical_alignment="center")
+    cat = c_cat.pills("분류", ["전체", *dict.fromkeys(table["분류"])], default="전체", key="inv_cat", label_visibility="collapsed") or "전체"
+    q = c_q.text_input("품목 검색", placeholder="품목명 또는 코드로 찾기", key="inv_q", icon=":material/search:", label_visibility="collapsed").strip()
+    with c_up.popover("파일로 불러오기", icon=":material/upload_file:", width="stretch"):
+        up = st.file_uploader("실사 재고 파일 (엑셀 · CSV · JSON · 텍스트)", type=["csv", "tsv", "txt", "md", "json", "xlsx", "xls", "ods"],
+                              key=f"inv_up_{get_store()}")
+        st.download_button("양식 받기 (CSV)", TEMPLATE_CSV, "실사재고_양식.csv", "text/csv", icon=":material/download:")
         if up is not None:
             try:
                 imp = parse_inventory_file(up.name, up.getvalue(), ITEMS)
@@ -910,43 +925,40 @@ def stock_editor():
                     s["table"] = build_table(imp.grams)
                     s["ver"] += 1
                     s["applied"] = up.file_id
+                    table = s["table"]
                 st.success(f"{len(imp.grams)}개 품목을 불러왔습니다. 아래 표에서 수정할 수 있습니다.")
-
-    st.markdown(f"**실사 재고 입력 · {get_store()}**")
-    if note := stock_note():
-        st.info(note, icon=":material/query_stats:")
-    st.caption("BOX·PK·낱개 값을 직접 수정하면 즉시 반영됩니다. 낱개는 품목의 기본단위(g·ml·개·장·롤 등)로 입력하고, "
-               "BOX/PK 입수는 품목 마스터 기준으로 자동 환산됩니다.")
-    table = s["table"]
-    f_cat, f_q = st.columns([3, 2], vertical_alignment="bottom")
-    cat = f_cat.pills("분류", ["전체", *dict.fromkeys(table["분류"])], default="전체", key="inv_cat") or "전체"
-    q = f_q.text_input("품목 검색", placeholder="품목명 또는 코드", key="inv_q", icon=":material/search:").strip()
+    c_view, c_tg = st.columns([5, 4], vertical_alignment="center")
+    which = c_view.segmented_control("보기", ["전체", "아직 안 센 품목", "확인 필요"], default="전체", key="inv_view", label_visibility="collapsed") or "전체"
+    with c_tg:
+        show_all = dormant_toggle("stock_input_dormant", "활동 없는 품목도 보기")
+    codes = active_codes()
+    seed = s["seed"][1]                                                # 화면을 열 때의 추정값 (입력과 비교하는 기준)
+    checks = {i: entry_check(ITEMS[n], (b, p, l), (seed.at[i, "BOX"], seed.at[i, "PK"], seed.at[i, "낱개"]))
+              for i, n, b, p, l in zip(table.index, table["품목"], table["BOX"], table["PK"], table["낱개"])}
+    universe = table.index if codes is None or show_all else table.index[table["품목코드"].isin(codes)]    # 진행률의 분모: 화면에 보이는 품목 전체
     mask = pd.Series(True, index=table.index)
     if cat != "전체":
         mask &= table["분류"] == cat
-    codes = active_codes()
-    show_all = dormant_toggle("stock_input_dormant")
     if q:
         mask &= table["품목"].str.contains(q, case=False, regex=False) | table["품목코드"].str.contains(q, case=False, regex=False)    # 검색하면 활동 없는 품목도 찾는다
     elif codes is not None and not show_all:
         mask &= table["품목코드"].isin(codes)
-    view = table[mask]
-    seed = s["seed"][1]                                                # 화면을 열 때의 추정값 (입력과 비교하는 기준)
-    checks = {i: entry_check(ITEMS[n], (b, p, l), (seed.at[i, "BOX"], seed.at[i, "PK"], seed.at[i, "낱개"]))
-              for i, n, b, p, l in zip(table.index, table["품목"], table["BOX"], table["PK"], table["낱개"])}
+    if which == "아직 안 센 품목":
+        mask &= pd.Series([checks[i] == "추정값" for i in table.index], index=table.index)
+    elif which == "확인 필요":
+        mask &= pd.Series([checks[i].startswith("확인 필요") for i in table.index], index=table.index)
+    view = table[mask].sort_values("분류", key=lambda c: c.map(CATEGORY_ORDER).fillna(len(CATEGORY_ORDER)), kind="stable")    # 식재료(원재료·반제품)를 먼저, 집기·소모품은 뒤로
+    status = st.container()                                              # 진행·상태·저장 줄: 아래 표와 결과를 계산한 뒤 채운다 (표 위에 놓기 위해)
     shown = view.assign(**{"환산 기준": [convert_basis(ITEMS[n]) for n in view["품목"]],
                            "합계": [entry_total(ITEMS[n], b, p, l) for n, b, p, l in zip(view["품목"], view["BOX"], view["PK"], view["낱개"])],
                            "확인": [checks[i] for i in view.index]})
-    edited = st.data_editor(shown, hide_index=True, width="stretch", alt="품목별 실사 재고 입력 표", key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}",
+    edited = st.data_editor(shown, hide_index=True, width="stretch", alt="품목별 실사 재고 입력 표", key=f"inv_editor_{get_store()}_{s['ver']}_{cat}_{q}_{which}",
                             disabled=["품목코드", "품목", "분류", "단위", "합계", "확인", "환산 기준"], column_order=ENTRY_COLUMNS, column_config=ENTRY_CONFIG)
     t = table.copy()   # 보이는 행의 수정값만 전체 표에 반영 (필터로 가려진 행은 그대로)
     t.loc[edited.index, ["BOX", "PK", "낱개"]] = edited[["BOX", "PK", "낱개"]]
     s["table"] = t
     if not edited[["BOX", "PK", "낱개"]].fillna(-1).equals(view[["BOX", "PK", "낱개"]].fillna(-1)):
         st.rerun()   # 방금 고친 행의 환산 합계가 바로 보이도록 한 번 더 그린다 (표시 열은 저장된 값으로 계산하므로)
-    n_check = sum(c.startswith("확인 필요") for c in checks.values())
-    if n_check:
-        st.warning(f"확인이 필요한 입력이 {n_check}개 있어요. 표의 '확인' 열을 보세요.", icon=":material/error:")
     st.caption(f"{len(view)}개 표시 / 전체 {len(table)}개" + (f" — 최근 {activity.DORMANT_DAYS}일 입고·청구가 있었던 품목만 보고 있어요 (위 스위치나 검색으로 나머지도 볼 수 있어요)" if codes is not None and not show_all and not q else ""))
 
     today, cal = get_today(), get_calendar()
@@ -955,24 +967,46 @@ def stock_editor():
     results = [(ITEMS[n], g, recommend(ITEMS[n], g, today, cal)) for n, g in stock.items()]
     for name_, msg in errors:
         st.error(f"{name_}: {msg}")
-    return sorted(results, key=lambda x: STATUS_ORDER[x[2].status]), errors
+    results = sorted(results, key=lambda x: STATUS_ORDER[x[2].status])
+    shown_results, _ = only_active(results, show_all)                    # 상태 숫자도 표와 같은 품목 범위로
+    n = {k: sum(r.status == k for _, _, r in shown_results) for k in STATUS}
+    n_in = sum(checks[i] != "추정값" for i in universe)
+    n_check = sum(checks[i].startswith("확인 필요") for i in universe)
+    sig = table_signature(t)
+    saved = ss.get("inv_saved", {}).get(get_store())
+    with status:
+        c_prog, c_state, c_save = st.columns([4, 6, 2], vertical_alignment="center")
+        c_prog.progress(n_in / max(1, len(universe)), text=f"직접 센 품목 {n_in} / {len(universe)}개")
+        with c_state:
+            with st.container(horizontal=True, vertical_alignment="center"):
+                for label, key, color in (("긴급", "URGENT", "red"), ("발주 필요", None, "orange"), ("양호", "OK", "gray"), ("데이터 없음", "NO_DATA", "gray")):
+                    count = n["ORDER_NOW"] + n["ORDER_SOON"] if key is None else n[key] + (n["NO_USAGE"] if key == "OK" else 0)
+                    st.badge(f"{label} {count}", color=color if count else "gray")
+                if n_check:
+                    st.badge(f"확인 필요 {n_check}", color="orange", icon=":material/error:")
+                if errors:
+                    st.badge(f"입력 오류 {len(errors)}", color="red", icon=":material/error:")
+        with c_save:
+            st.button("이력에 저장", icon=":material/save:", type="primary", key="inv_save", on_click=save_snapshot, width="stretch",
+                      help="현재 입력값을 '매장별 재고입력 이력'에 남깁니다.")
+        if saved and saved[0] == sig:
+            st.caption(f":material/check_circle: {saved[1]}에 저장했어요.")
+        elif n_in:
+            st.caption(":material/edit_note: 저장하지 않은 입력이 있어요. 끝나면 '이력에 저장'을 눌러 주세요." + (f" (마지막 저장 {saved[1]})" if saved else ""))
+    return results, errors
 
 
 def save_snapshot():
     s = inv_state()
-    ss.inv_history = [*ss.inv_history, {"저장시각": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"), "매장": get_store(),
-                                        "표": s["table"].copy()}]
+    now = pd.Timestamp.now()
+    ss.inv_history = [*ss.inv_history, {"저장시각": now.strftime("%Y-%m-%d %H:%M"), "매장": get_store(), "표": s["table"].copy()}]
+    ss.inv_saved = {**ss.get("inv_saved", {}), get_store(): (table_signature(s["table"]), now.strftime("%H:%M"))}   # 저장한 뒤 바뀌었는지 알리려고
     st.toast("현재 실사 재고를 이력에 저장했어요.", icon=":material/check_circle:")
 
 
 @register("stock.input")
 def stock_input(leaf: Leaf):
-    results, errors = stock_editor()
-    st.button("이력에 저장", icon=":material/save:", type="primary", on_click=save_snapshot,
-              help="현재 입력값을 '매장별 재고입력 이력'에 남깁니다.")
-    n = {s: sum(r.status == s for _, _, r in results) for s in STATUS}
-    kpis([("긴급", f"{n['URGENT']}개", None), ("발주 필요", f"{n['ORDER_NOW'] + n['ORDER_SOON']}개", None),
-          ("양호", f"{n['OK'] + n['NO_USAGE']}개", None), ("데이터 없음", f"{n['NO_DATA']}개", None), ("입력 오류", f"{len(errors)}개", None)])
+    stock_editor()
     with st.expander("품목 하나만 빠르게 확인", icon=":material/search:"):
         name = st.selectbox("품목", list(ITEMS), key="quick_item")
         item = ITEMS[name]

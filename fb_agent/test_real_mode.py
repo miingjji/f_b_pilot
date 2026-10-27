@@ -74,7 +74,7 @@ rows_all = rows_of(s_after.toggle[0].set_value(True).run())                     
 input_caption_all = inp(s_input.toggle[0].set_value(True).run())
 out["sim"] = {"rows_default": rows_default, "rows_all": rows_all, "hidden_caption": hidden_caption, "toggle_label": toggle_label,
               "input_caption": input_caption, "input_caption_all": input_caption_all, "exc2": [],
-              "after": note(s_after), "before": note(s_before), "input": note(s_input),
+              "after": note(s_after), "before": note(s_before), "input": [x.label for x in s_input.expander if "추정값" in x.label],
               "cols_after": sorted({c for d in s_after.dataframe for c in d.value.columns}),
               "closed_wd": list(s_after.session_state["cfg_closed_wd"]),
               "urgent_after": next((m.value for m in s_after.metric if m.label == "긴급"), None),
@@ -186,7 +186,7 @@ class RealMode(unittest.TestCase):
         self.assertLessEqual(int(r["urgent_after"].rstrip("개")), 12)                                 # 10-24 긴급: 실제 입고·오는 중인 주문을 반영한 값 (처음엔 24개)
         self.assertIn("이미 오는 중인 입고", r["after"][0])                                  # 발주 판단에 더한 입고 예정을 안내
         self.assertIn("오는 중 입고", r["cols_after"])
-        self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에도 같은 안내
+        self.assertEqual(len(r["input"]), 1)                                              # 재고 입력 화면에는 접힌 안내의 제목으로
         self.assertEqual(r["before"], [])                                                 # 실사 전 날짜에는 안내 없음
 
     def test_item_lists_show_only_items_with_recent_activity_by_default(self):
