@@ -495,10 +495,12 @@ def po_auto(leaf: Leaf):
         if short:
             st.markdown(stock_note())
         st.markdown(f"'{get_store()}' 현재 재고 기준입니다. 실제 재고는 '매장별 재고입력'에서 바꿀 수 있어요.")
+    pool = {it.name for it in item_filter("pa", list(ITEMS.values()))}
+    narrowed = len(pool) != len(ITEMS)                                     # 업체·검색으로 좁히면 활동 없는 품목도 찾을 수 있게 한다
     c_state, c_tg = st.columns([7, 3], vertical_alignment="center")
     with c_tg:
         show_all = dormant_toggle("po_auto_dormant", "활동 없는 품목도 보기")
-    results, hidden = only_active(current_results(), show_all)
+    results, hidden = only_active([x for x in current_results() if x[0].name in pool], show_all or narrowed)
     n = {s: sum(r.status == s for _, _, r in results) for s in STATUS}
     with c_state:
         status_badges(n)
