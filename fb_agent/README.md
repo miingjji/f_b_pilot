@@ -11,7 +11,7 @@ F&B 매장 운영 도우미. 실사 재고로 발주 시점·수량을 추천하
 | 중앙 | 요약 카드 + 월/일 달력 대시보드, 또는 선택한 소메뉴 화면 (매출분석, 발주·재고, 인력·스케줄 등 56개) |
 | 우측 | F&B Agent 챗봇. 창이 넓으면 고정 패널, 좁으면 버튼으로 여는 서랍 |
 
-레이아웃과 반응형 규칙은 [docs/LAYOUT.md](docs/LAYOUT.md), 스크린샷은 `docs/screenshots/` 참고.
+레이아웃과 반응형 규칙은 [docs/LAYOUT.md](docs/LAYOUT.md), 화면 스크린샷은 저장소에 두지 않고 `python e2e/check_ui.py`로 `docs/screenshots/`에 새로 만든다.
 
 ## 실행
 
