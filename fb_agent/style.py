@@ -40,7 +40,7 @@ h2, h3 {{ color: {HEADING}; letter-spacing: -0.015em; text-wrap: balance; }}
 }}
 
 /* ---- 지표 칸: 라벨은 작게, 숫자는 크게. 아이콘은 오른쪽 위에 먹색 선으로만 ---- */
-[class*="st-key-kpi-"] {{ position: relative; flex: 1 1 0; min-width: 0; align-self: stretch; padding: 0.85rem 1.1rem 0.9rem;
+[class*="st-key-kpi-"] {{ position: relative; flex: 1 1 0; min-width: 0; align-self: stretch; padding: 0.85rem 1.1rem 0.9rem; min-height: 6.9rem;
   display: flex; flex-direction: column; justify-content: center; }}
 [class*="st-key-kpi-"] [data-testid="stElementContainer"]:has(.kpi-chip) {{ position: absolute; right: 0.9rem; top: 0.8rem; width: auto; }}
 [class*="st-key-kpi-"] [data-testid="stMetric"] {{ text-align: left; align-items: flex-start; }}
@@ -73,6 +73,10 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT}; background:
 
 /* 청구 목록 보기: 전환 대기 건을 놓치지 않도록 크게 */
 .st-key-open_req_list button, .st-key-open_req_list_detail button {{ min-height: 3.2rem; font-size: 1.05rem; }}
+
+/* ---- 표: 바탕보다 밝게 (표 칸은 canvas 로 그려져서 밝기 필터로 올린다) ---- */
+[data-testid="stDataFrame"] canvas {{ filter: brightness(1.065); }}
+[data-testid="stDataFrame"] {{ background: #FBFCFE; border-radius: 6px; }}
 
 /* ---- 버튼 ---- */
 .stMainBlockContainer button[kind="primary"] {{ box-shadow: none; font-weight: 600; letter-spacing: -0.005em; }}
