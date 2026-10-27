@@ -307,6 +307,25 @@ def sup_days(sup: str) -> list[date]:
             if items and all(is_order_day(it, today + timedelta(days=i), cal) for it in items)]
 
 
+def day_advice(items: list, days: list[date], info: dict) -> tuple[date | None, dict]:
+    """발주일 후보별 조언. (권장일, {날짜: 문구}). 권장일 = 담긴 품목 모두가 재고 소진·안전재고 전에 입고되는 마지막 발주일 (엔진의 '발주 예정일' 기준).
+    그보다 늦은 날은 결품 예상 일수를 알려 준다. 근거가 없는 품목(소비·리드타임 데이터 없음)은 판단에서 뺀다."""
+    recs = [(it, info[it.name][1]) for it in items if it.name in info and info[it.name][1].order_date is not None]
+    if not days or not recs:
+        return None, {}
+    limit = min(r.order_date for _it, r in recs)
+    safe = [d for d in days if d <= limit]
+    best = safe[-1] if safe else days[0]
+    out = {}
+    for d in days:
+        gap = max((max(0, (d + timedelta(days=it.lead_time_days) - r.stockout_date).days) for it, r in recs if r.stockout_date and it.lead_time_days is not None), default=0)
+        if d == best:
+            out[d] = "권장" if safe else "권장 · 가장 빠른 날"
+        elif d > best:
+            out[d] = f"결품 {gap}일 예상" if gap else "안전재고 부족 가능"
+    return best, out
+
+
 def chosen_day(sup: str) -> date | None:
     """사용자가 고른 발주일. 고른 적이 없거나 더는 가능하지 않으면 가장 빠른 발주 가능일."""
     days = sup_days(sup)
@@ -442,8 +461,14 @@ def po_request(leaf: Leaf):
                 if ss.get(key) not in days:                                    # 처음이거나 고른 날이 더는 가능하지 않으면 가장 빠른 발주일
                     ss[key] = days[0]
                 lead = "D+" + (str(leads[0]) if len(leads) == 1 else f"{leads[0]}~{leads[-1]}") if leads else "데이터 없음"
-                st.selectbox("발주일 → 입고일", days, key=key, format_func=lambda d, ls=leads, ld=lead: fmt_date(d) + " → " + (fmt_date(d + timedelta(days=ls[0])) if len(ls) == 1 else f"입고 {ld}"),
-                             help=f"발주 가능한 날만 나와요 (발주 {SUPPLIERS[sup].order_days_label}, 리드타임 {lead}, 휴점·입고 불가일 제외).")
+                best, advice = day_advice(items, days, info)
+                st.selectbox("발주일 → 입고일", days, key=key,
+                             format_func=lambda d, ls=leads, ld=lead, ad=advice: fmt_date(d) + " → " + (fmt_date(d + timedelta(days=ls[0])) if len(ls) == 1 else f"입고 {ld}") + (f"  ({ad[d]})" if d in ad else ""),
+                             help=f"발주 가능한 날만 나와요 (발주 {SUPPLIERS[sup].order_days_label}, 리드타임 {lead}, 휴점·입고 불가일 제외). "
+                                  "(권장)은 담긴 품목이 모두 재고 소진·안전재고 전에 입고되는 마지막 발주일이에요. 그보다 늦은 날은 결품 예상 일수를 알려 줘요.")
+                if best:
+                    st.caption(("권장 발주일: " + fmt_date(best) + " (지금 고른 날이 권장일이에요)") if ss[key] == best else
+                               f"권장 발주일: {fmt_date(best)}" + (" · 고른 날은 권장일보다 빨라요" if ss[key] < best else f" · 고른 날은 {advice.get(ss[key], '권장일보다 늦어요')}"))
                 st.divider()
             st.text_input("메모", placeholder="선택", key="req_memo")
             st.button(f"청구 등록 ({len(cart)}건)", type="primary", icon=":material/add:", width="stretch", disabled=not cart, on_click=cart_submit)
