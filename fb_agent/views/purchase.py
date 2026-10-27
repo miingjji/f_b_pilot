@@ -174,50 +174,81 @@ def convert_to_po(req_no: str, toast: bool = True):
             return
 
 
-def ask_convert(sup: str | None):
-    ss.cv_confirm = sup
+def _pending() -> list:
+    return [r for r in ss.purchase_requests if r["상태"] == "청구"]
 
 
-def do_convert(sup: str):
-    pend = [r for r in ss.purchase_requests if r["거래처"] == sup and r["상태"] == "청구"]
-    for r in pend:
+def _selected() -> list:
+    return [r for r in _pending() if ss.get(f"cvsel_{r['청구번호']}")]
+
+
+def ask_convert(on: bool):
+    ss.cv_confirm = on
+
+
+def pick_all(sup: str, on: bool):
+    for r in _pending():
+        if r["거래처"] == sup:
+            ss[f"cvsel_{r['청구번호']}"] = on
+    ss.cv_confirm = False
+
+
+def do_convert():
+    chosen = _selected()
+    for r in chosen:
         convert_to_po(r["청구번호"], toast=False)
-    ss.cv_confirm = None
-    ss.cv_done = f"{sup} {len(pend)}건을 발주서로 전환했어요."      # 알림은 창 본문에서 띄운다 (콜백에서 화면 요소를 그리면 안 됨)
+        ss[f"cvsel_{r['청구번호']}"] = False
+    ss.cv_confirm = False
+    ss.cv_done = f"{len(chosen)}건을 발주서로 전환했어요."      # 알림은 창 본문에서 띄운다 (콜백에서 화면 요소를 그리면 안 됨)
 
 
 def open_req_list():
-    ss.cv_confirm = None
+    ss.cv_confirm = False
     ss.pop("cv_done", None)
+    for r in ss.purchase_requests:
+        ss[f"cvsel_{r['청구번호']}"] = False
     req_list_dialog()
 
 
 @st.dialog("청구 목록", width="large")
 def req_list_dialog():
-    """업체별 청구 목록. 발주 전환은 업체 단위로 확인(같은 창 안)한 뒤 처리한다."""
+    """업체별 청구 목록. 지금 발주할 건만 골라 전환한다 (전환 전에 같은 창 안에서 한 번 더 확인)."""
     reqs = ss.purchase_requests
     if ss.get("cv_done"):
         st.success(ss.pop("cv_done"), icon=":material/check_circle:")
     if not reqs:
         st.caption("등록된 구매청구가 없어요.")
         return
+    st.caption("지금 발주할 청구만 체크한 뒤 아래 '선택 발주 전환'을 누르세요. 체크하지 않은 청구는 그대로 남아요.")
     for sup in dict.fromkeys(r["거래처"] for r in reversed(reqs)):
         mine = [r for r in reversed(reqs) if r["거래처"] == sup]
         pend = [r for r in mine if r["상태"] == "청구"]
         with st.container(border=True):
-            head, act = st.columns([5, 2], vertical_alignment="center")
+            head, a1, a2 = st.columns([5, 1.3, 1.3], vertical_alignment="center")
             head.markdown(f"**{sup}** · 청구 {len(mine)}건" + (f" · 전환 대기 {len(pend)}건" if pend else " · 모두 발주 전환됨"))
-            if pend and ss.get("cv_confirm") != sup:
-                act.button(f"발주 전환 ({len(pend)}건)", key=f"cv_{sup}", type="primary", icon=":material/swap_horiz:", width="stretch", on_click=ask_convert, args=(sup,))
+            if pend:
+                a1.button("전체 선택", key=f"cvall_{sup}", width="stretch", on_click=pick_all, args=(sup, True))
+                a2.button("선택 해제", key=f"cvnone_{sup}", width="stretch", on_click=pick_all, args=(sup, False))
             for r in mine:
-                st.markdown(f"{r['청구번호']} · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}"
-                            + ("" if r["상태"] == "청구" else f" · :gray[{r['상태']}]"))
-            if pend and ss.get("cv_confirm") == sup:
-                with st.container(border=True, key=f"cvbox_{sup}"):
-                    st.markdown(f"**{sup}**의 청구 {len(pend)}건을 발주로 전환하시겠습니까? 전환하면 입고 대기 상태가 돼요.")
-                    ok, no, _ = st.columns([2, 1, 3])
-                    ok.button(f"발주 전환 ({len(pend)}건)", key=f"cvok_{sup}", type="primary", icon=":material/check:", width="stretch", on_click=do_convert, args=(sup,))
-                    no.button("취소", key=f"cvno_{sup}", width="stretch", on_click=ask_convert, args=(None,))
+                line = f"{r['청구번호']} · {r['품목']} {qty_for(r['품목'], r['수량(PK)'])} · 발주 {fmt_date(r.get('발주예정일'))} → 입고 {fmt_date(r['희망입고일'])}"
+                if r["상태"] == "청구":
+                    st.checkbox(line, key=f"cvsel_{r['청구번호']}", on_change=ask_convert, args=(False,))
+                else:
+                    st.markdown(f":gray[{line} · {r['상태']}]")
+    chosen = _selected()
+    if not _pending():
+        return
+    if ss.get("cv_confirm") and chosen:
+        with st.container(border=True, key="cvbox"):
+            st.markdown(f"**선택한 {len(chosen)}건**을 발주로 전환하시겠습니까? 전환하면 입고 대기 상태가 돼요.")
+            st.dataframe(pd.DataFrame([{"거래처": r["거래처"], "청구번호": r["청구번호"], "품목": r["품목"], "수량": qty_for(r["품목"], r["수량(PK)"]),
+                                        "발주일": fmt_date(r.get("발주예정일")), "입고 예정": fmt_date(r["희망입고일"])} for r in chosen]),
+                         hide_index=True, width="stretch")
+            ok, no, _ = st.columns([2, 1, 3])
+            ok.button(f"발주 전환 ({len(chosen)}건)", key="cvok", type="primary", icon=":material/check:", width="stretch", on_click=do_convert)
+            no.button("취소", key="cvno", width="stretch", on_click=ask_convert, args=(False,))
+    else:
+        st.button(f"선택 발주 전환 ({len(chosen)}건)", key="cvgo", type="primary", icon=":material/swap_horiz:", disabled=not chosen, on_click=ask_convert, args=(True,))
 
 
 REQ_PAGE = 12            # 구매청구 화면에서 한 페이지에 보여 주는 품목 카드 수
