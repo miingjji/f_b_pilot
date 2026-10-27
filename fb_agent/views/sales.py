@@ -10,6 +10,13 @@ from views import register
 from views.common import date_range, iso, kpis, no_data, num_cols, pct_delta, sales_anchor, sales_notice, won
 
 DOW_KR = "월화수목금토일"
+UNITS = {"매출": "원", "객단가": "원", "객수": "명", "영업일": "일"}
+
+
+def unit_table(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """표의 숫자 열 이름에 단위를 붙이고(매출(원)·객수(명)…) 천 단위 쉼표를 적용하는 (표, column_config)."""
+    out = df.rename(columns={c: f"{c}({u})" for c, u in UNITS.items() if c in df.columns})
+    return out, num_cols(*[f"{c}({u})" for c, u in UNITS.items() if c in df.columns])
 
 
 # ---------------- 매출요약 ----------------
@@ -24,11 +31,9 @@ def monthly(leaf: Leaf):
           (f"{len(m)}개월 합계", won(m["sales"].sum()), None),
           ("월평균 객수", f"{int(m['customers'].mean()):,}명", None)])
     st.bar_chart(m, x="month", y="sales", x_label="월", y_label="매출(원)", alt="월별 매출")
-    out = m.assign(객단가=(m["sales"] / m["customers"]).astype(int)).rename(
-        columns={"month": "월", "sales": "매출", "customers": "객수", "days": "영업일"})
-    st.dataframe(out, hide_index=True, width="stretch", alt="월별 매출 집계표",
-                 column_config={"매출": st.column_config.NumberColumn(format="%d원"),
-                                "객단가": st.column_config.NumberColumn(format="%d원")})
+    out, cfg = unit_table(m.assign(객단가=(m["sales"] / m["customers"]).astype(int)).rename(
+        columns={"month": "월", "sales": "매출", "customers": "객수", "days": "영업일"}))
+    st.dataframe(out, hide_index=True, width="stretch", alt="월별 매출 집계표", column_config=cfg)
 
 
 @register("sales.daily")
@@ -45,10 +50,9 @@ def daily(leaf: Leaf):
     with chart_tab:
         st.line_chart(iso(df), x="date", y="sales", x_label="일자", y_label="매출(원)", alt="일자별 매출 추이")
     with table_tab:
-        st.dataframe(df.assign(일자=df["date"].dt.strftime("%Y-%m-%d"))[["일자", "sales", "customers", "ticket"]]
-                     .rename(columns={"sales": "매출", "customers": "객수", "ticket": "객단가"})
-                     .sort_values("일자", ascending=False), hide_index=True, width="stretch", alt="일자별 매출표",
-                     column_config=num_cols("매출", "객수", "객단가"))
+        tbl, cfg = unit_table(df.assign(일자=df["date"].dt.strftime("%Y-%m-%d"))[["일자", "sales", "customers", "ticket"]]
+                              .rename(columns={"sales": "매출", "customers": "객수", "ticket": "객단가"}).sort_values("일자", ascending=False))
+        st.dataframe(tbl, hide_index=True, width="stretch", alt="일자별 매출표", column_config=cfg)
 
 
 @register("sales.weekday")
@@ -64,8 +68,8 @@ def weekday(leaf: Leaf):
           ("가장 낮은 요일", g["매출"].idxmin(), won(g["매출"].min()))])
     st.caption("최근 90일 영업일 기준 요일별 평균 (쉬는 날은 평균에서 제외)")
     st.bar_chart(g["매출"], y_label="평균 매출(원)", alt="요일별 평균 매출")
-    st.dataframe(g.reset_index(names="요일"), hide_index=True, width="stretch", alt="요일별 평균표",
-                 column_config=num_cols("매출", "객수"))
+    tbl, cfg = unit_table(g.astype(int).reset_index(names="요일"))
+    st.dataframe(tbl, hide_index=True, width="stretch", alt="요일별 평균표", column_config=cfg)
 
 
 @register("sales.hourly")
@@ -81,8 +85,8 @@ def hourly(leaf: Leaf):
     with chart_tab:
         st.bar_chart(h.assign(시간=h["hour"].astype(str) + "시"), x="시간", y="sales", y_label="매출(원)", alt="시간대별 매출")
     with table_tab:
-        st.dataframe(h.rename(columns={"hour": "시", "sales": "매출", "customers": "객수"}), hide_index=True,
-                     width="stretch", alt="시간대별 매출표", column_config=num_cols("매출", "객수"))
+        tbl, cfg = unit_table(h.rename(columns={"hour": "시", "sales": "매출", "customers": "객수"}))
+        st.dataframe(tbl, hide_index=True, width="stretch", alt="시간대별 매출표", column_config=cfg)
 
 
 @register("sales.realtime")
@@ -112,7 +116,7 @@ def ticket(leaf: Leaf):
         return no_data()
     kpis([("평균 객단가", won(df.loc[df["customers"] > 0, "ticket"].mean()), None)])
     st.caption("회전율은 좌석 수 데이터가 없어 제공하지 않습니다.")
-    st.line_chart(iso(df), x="date", y="ticket", x_label="일자", y_label="원", alt="일자별 객단가")
+    st.line_chart(iso(df), x="date", y="ticket", x_label="일자", y_label="객단가(원)", alt="일자별 객단가")
 
 
 @register("sales.cumulative")
@@ -167,8 +171,8 @@ def customers(leaf: Leaf):
     df = sd.daily(start, end)
     if df.empty:
         return no_data("선택한 기간에 영업일 데이터가 없어요.")
-    kpis([("총 객수", f"{int(df['customers'].sum()):,}명", None), ("영업일 평균", f"{df['customers'].mean():.0f}명", None)])
-    st.line_chart(iso(df), x="date", y="customers", x_label="일자", y_label="객수", alt="일자별 객수")
+    kpis([("총 객수", f"{int(df['customers'].sum()):,}명", None), ("영업일 평균", f"{df['customers'].mean():,.0f}명", None)])
+    st.line_chart(iso(df), x="date", y="customers", x_label="일자", y_label="객수(명)", alt="일자별 객수")
 
 
 # ---------------- 메뉴매출분석 ----------------
