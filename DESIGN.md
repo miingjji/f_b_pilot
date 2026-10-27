@@ -12,7 +12,7 @@ colors:
   table-header: "#CED4DC"
   ink-muted: "#566071"
   rule: "#C3CAD4"
-  sidebar-shade: "#152D4B"
+  sidebar-shade: "#1E3A60"
   input-surface: "#D6DBE3"
   alert-red: "#B3261E"
   alert-orange: "#8F4F00"
@@ -131,7 +131,7 @@ components:
 - **보조 글자** (ink-muted, #566071): 캡션·지표 라벨·지표 아이콘. 미스트 위 5.22:1, 카드 면 위 5.88:1.
 - **괘선** (rule, #C3CAD4): 모든 테두리와 표 선.
 - **슬레이트** (slate, #A7B1BE): 사이드바 보조 글자·캡션·hover 테두리. 가장 진한 네이비 위 7.61:1.
-- **사이드바 짙은 면** (sidebar-shade, #152D4B): 사이드바 hover·보조 버튼 면.
+- **사이드바 짙은 면** (sidebar-shade, #1E3A60): 사이드바 hover·보조 버튼 면.
 
 사이드바 대비: 미스트/가장 진한 네이비 13.58:1, 슬레이트/가장 진한 네이비 7.61:1. 차트용 범주 색(config.toml chartCategoricalColors)과 네이비 단계 10색(chartSequentialColors)은 테마에 정의돼 있고 차트 전용이다.
 
@@ -179,7 +179,7 @@ components:
 - **Shape:** 6px 모서리, 그림자 없음.
 - **Primary:** 포인트 네이비 바탕, 흰 글자, 굵기 600, 자간 -0.005em. 한 구역에 하나('이력에 저장').
 - **Secondary:** 카드 면(#F5F6F9) 바탕 + 1px 괘선.
-- **Tertiary (사이드바 메뉴):** 글자 미스트, hover 시 #152D4B 면 + 흰 글자.
+- **Tertiary (사이드바 메뉴):** 글자 미스트, hover 시 #1E3A60 면 + 흰 글자.
 
 ### Cards / Containers
 - **지표 칸:** 카드 면, 1px 괘선, 8px, 안쪽 0.85rem 1.1rem. 라벨은 작은 보조 글자, 숫자는 가장 진한 네이비로 크게, 아이콘은 오른쪽 위에 한 가지 회색 선 아이콘.

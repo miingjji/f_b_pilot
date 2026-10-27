@@ -46,7 +46,7 @@ style = "normal"
 
 [theme.sidebar]
 backgroundColor = "#0B1F3A"
-secondaryBackgroundColor = "#152D4B"
+secondaryBackgroundColor = "#1E3A60"
 textColor = "#E6E9EF"
 primaryColor = "#A7B1BE"
 borderColor = "#1F3B5C"

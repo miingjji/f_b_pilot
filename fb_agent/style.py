@@ -10,7 +10,7 @@ import streamlit as st
 # 포인트, 선, 글자, 보조 글자, 바탕, 카드 면, 포인트 연한 면, 제목, 위험, 주의
 ACCENT, LINE, INK, MUTED = "#1F3B5C", "#C3CAD4", "#2B2F36", "#566071"
 PAPER, SURFACE, TINT, HEADING, DANGER, WARN = "#E6E9EF", "#F5F6F9", "#CED4DD", "#0B1F3A", "#B3261E", "#8F4F00"
-SIDE, SIDE_SHADE, SIDE_TEXT, SIDE_MUTED = "#0B1F3A", "#152D4B", "#E6E9EF", "#A7B1BE"   # 사이드바: 가장 진한 네이비 바탕에 밝은 글자
+SIDE, SIDE_SHADE, SIDE_TEXT, SIDE_MUTED = "#0B1F3A", "#1E3A60", "#E6E9EF", "#A7B1BE"   # 사이드바: 가장 진한 네이비 바탕에 밝은 글자
 BLUE = ACCENT   # (옛 이름: 선택·강조색)
 ICON_COLOR = "#566071"
 CHIPS = [(ICON_COLOR, "transparent")]   # 지표 아이콘은 색 칩 없이 한 가지 먹색 선 아이콘
@@ -75,8 +75,8 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT}; background:
 /* ---- 사이드바: 가장 진한 네이비 바탕에 밝은 글자. 선택된 메뉴는 밝은 칸 ---- */
 [data-testid="stSidebar"] {{ border-right: 0; box-shadow: none; }}
 [data-testid="stSidebar"] button[kind="tertiary"] {{ color: {SIDE_TEXT}; }}
-[data-testid="stSidebar"] button[kind="tertiary"]:hover {{ background: {SIDE_SHADE}; color: #FFFFFF; }}
-[data-testid="stSidebar"] button[kind="secondary"] {{ background: {SIDE_SHADE}; color: {SIDE_TEXT}; border-color: {ACCENT}; }}
+[data-testid="stSidebar"] button[kind="tertiary"]:hover {{ background: #2A4B78; color: #FFFFFF; }}
+[data-testid="stSidebar"] button[kind="secondary"] {{ background: {SIDE_SHADE}; color: {SIDE_TEXT}; border-color: #3A5A86; }}
 [data-testid="stSidebar"] button[kind="secondary"]:hover {{ border-color: {SIDE_MUTED}; color: #FFFFFF; }}
 [data-testid="stSidebar"] button[kind="primary"] {{ background: {SIDE_TEXT}; color: {HEADING}; border-color: {SIDE_TEXT}; font-weight: 700; }}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"], [data-testid="stSidebar"] [data-testid="stCaptionContainer"] * {{ color: {SIDE_MUTED}; }}
