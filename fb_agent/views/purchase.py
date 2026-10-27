@@ -189,7 +189,7 @@ def convert_to_po(req_no: str, toast: bool = True):
             ss.purchase_orders = [*ss.purchase_orders, {
                 "발주번호": f"PO-{len(ss.purchase_orders) + 1:04d}", "거래처": r["거래처"], "품목": r["품목"],
                 "수량(PK)": r["수량(PK)"], "발주일": r.get("발주예정일") or get_today(),
-                "입고예정": r["희망입고일"] or get_today() + timedelta(days=lead), "상태": "입고대기"}]
+                "입고예정": r["희망입고일"] or get_today() + timedelta(days=lead), "입고수량(PK)": 0.0, "상태": "입고대기"}]
             r["상태"] = "발주완료"
             if toast:
                 st.toast(f"{req_no}을(를) 발주서로 전환했어요.", icon=":material/check_circle:")
@@ -757,30 +757,107 @@ def add_receipt(day: date, supplier: str, item: str, packs: float, kind: str, me
     add_stock(item, packs)
 
 
-def receive_po(po_no: str):
+SHORT_REASONS = ["거래처 수량 부족", "오배송", "파손·반품", "기타"]
+WAIT_REST, CLOSE_REST = "남은 수량은 나중에 입고 (발주서는 계속 입고 대기)", "남은 수량은 더 안 받음 (발주서를 부분 입고로 마감)"
+
+
+def po_received(po: dict) -> float:
+    return round(po.get("입고수량(PK)", 0.0), 2)
+
+
+def po_remaining(po: dict) -> float:
+    return round(max(po["수량(PK)"] - po_received(po), 0.0), 2)
+
+
+def receive_po(po_no: str, actual: float, rest: str | None, reason: str, memo: str) -> str:
+    """실제 들어온 수량(PK)만큼 입고 처리한다. 모자라면 rest 선택에 따라 발주서를 계속 대기시키거나 부분 입고로 마감한다. 처리 결과 문구를 돌려준다."""
     for po in ss.purchase_orders:
         if po["발주번호"] == po_no and po["상태"] == "입고대기":
-            po["상태"] = "입고완료"
-            add_receipt(get_today(), po["거래처"], po["품목"], po["수량(PK)"], "구매발주서", po_no)
-            st.toast(f"{po_no} 입고 처리 완료 — 재고에 반영했어요.", icon=":material/check_circle:")
-            return
+            remain, item = po_remaining(po), po["품목"]
+            note = f"{po_no} · 발주 {qty_for(item, po['수량(PK)'])} 중 {qty_for(item, actual)} 입고"
+            if actual < remain:
+                note += f" · 부족 {qty_for(item, round(remain - actual, 2))} ({reason}" + (f", {memo}" if memo else "") + ")"
+            elif actual > remain:
+                note += f" · 초과 {qty_for(item, round(actual - remain, 2))}" + (f" ({memo})" if memo else "")
+            elif memo:
+                note += f" · {memo}"
+            po["입고수량(PK)"] = round(po_received(po) + actual, 2)
+            add_receipt(get_today(), po["거래처"], item, actual, "구매발주서", note)
+            if actual >= remain:
+                po["상태"] = "입고완료"
+                return f"{po_no} 입고 완료 — 재고에 {qty_for(item, actual)} 반영했어요."
+            if rest == CLOSE_REST:
+                po["상태"] = "부분입고"
+                return f"{po_no} 부분 입고로 마감 — 재고에 {qty_for(item, actual)} 반영했고, 부족 {qty_for(item, round(remain - actual, 2))}는 더 받지 않아요."
+            return f"{po_no} 일부 입고 — 재고에 {qty_for(item, actual)} 반영했고, 남은 {qty_for(item, po_remaining(po))}는 계속 입고 대기예요."
+    return f"{po_no}은(는) 이미 처리된 발주서예요."
+
+
+@st.dialog("입고 처리", width="medium")
+def receive_dialog(po_no: str):
+    """실제로 들어온 수량을 입력받는다. 발주와 다르면(모자람·초과) 어떻게 처리할지 함께 정한다."""
+    po = next((x for x in ss.purchase_orders if x["발주번호"] == po_no and x["상태"] == "입고대기"), None)
+    if po is None:
+        st.caption("이미 처리된 발주서예요.")
+        return
+    item, remain = po["품목"], po_remaining(po)
+    it, got = ITEMS[item], po_received(po)
+    st.markdown(f"**{po_no}** · {item} · {po['거래처']}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("발주", qty_for(item, po["수량(PK)"]), border=True)
+    c2.metric("이미 입고", qty_for(item, got), border=True)
+    c3.metric("입고 남음", qty_for(item, remain), border=True)
+    per = units_of(it).per
+    st.markdown("**실제로 들어온 수량**")
+    actual = qty_input("", it, key=f"rc_qty_{po_no}_{remain}", min_value=0.0, default=remain / per)
+    rest, reason, memo = None, "", ""
+    if actual <= 0:
+        st.caption("들어온 수량을 입력하세요. 아무것도 안 들어왔다면 입고 처리를 하지 않고 발주서를 그대로 두세요.")
+    elif actual < remain:
+        short = round(remain - actual, 2)
+        st.warning(f"발주보다 **{qty_for(item, short)}** 적게 들어왔어요.", icon=":material/warning:")
+        rest = st.radio("남은 수량은?", [WAIT_REST, CLOSE_REST], key=f"rc_rest_{po_no}")
+        reason = st.selectbox("부족 사유", SHORT_REASONS, key=f"rc_why_{po_no}")
+    elif actual > remain:
+        st.warning(f"발주보다 **{qty_for(item, round(actual - remain, 2))}** 더 들어왔어요. 들어온 수량만큼 재고에 반영하고 발주서는 입고 완료로 닫아요.", icon=":material/warning:")
+    memo = st.text_input("메모", placeholder="선택 (예: 기사님 확인, 거래처 연락)", key=f"rc_memo_{po_no}")
+    ok, no = st.columns(2)
+    if ok.button("입고 처리", type="primary", icon=":material/check:", width="stretch", disabled=actual <= 0, key=f"rc_ok_{po_no}"):
+        ss.rc_done = receive_po(po_no, actual, rest, reason, memo)
+        st.rerun()
+    if no.button("취소", width="stretch", key=f"rc_no_{po_no}"):
+        st.rerun()
 
 
 @register("recv.by_po")
 def recv_by_po(leaf: Leaf):
-    pending = [p for p in ss.purchase_orders if p["상태"] == "입고대기"]
+    if ss.get("rc_done"):
+        st.success(ss.pop("rc_done"), icon=":material/check_circle:")
+    pos = ss.purchase_orders
+    pending = [p for p in pos if p["상태"] == "입고대기"]
     kpis([("입고 대기", f"{len(pending)}건", None),
-          ("입고 완료", f"{sum(p['상태'] == '입고완료' for p in ss.purchase_orders)}건", None)])
+          ("입고 완료", f"{sum(p['상태'] == '입고완료' for p in pos)}건", None),
+          ("부분 입고 마감", f"{sum(p['상태'] == '부분입고' for p in pos)}건", None)])
     st.subheader("입고 대기 발주서")
+    st.caption("들어온 수량이 발주와 다르면 '입고 처리' 창에서 실제 수량을 입력하세요. 모자란 만큼은 계속 기다리거나 부분 입고로 마감할 수 있어요.")
     if not pending:
         st.caption("입고 대기 중인 발주서가 없어요.")
     for p in pending:
         with st.container(border=True):
             left, right = st.columns([5, 1], vertical_alignment="center")
-            left.markdown(f"**{p['발주번호']}** · {p['품목']} {qty_for(p['품목'], p['수량(PK)'])} · {p['거래처']} · 입고예정 {fmt_date(p['입고예정'])}")
-            right.button("입고 처리", key=f"rc_{p['발주번호']}", type="primary", on_click=receive_po, args=(p["발주번호"],))
+            got = po_received(p)
+            left.markdown(f"**{p['발주번호']}** · {p['품목']} {qty_for(p['품목'], p['수량(PK)'])} · {p['거래처']} · 입고예정 {fmt_date(p['입고예정'])}"
+                          + (f" · 일부 입고 {qty_for(p['품목'], got)} (남음 {qty_for(p['품목'], po_remaining(p))})" if got else ""))
+            right.button("입고 처리", key=f"rc_{p['발주번호']}", type="primary", on_click=receive_dialog, args=(p["발주번호"],))
     st.subheader("전체 발주서")
-    st.dataframe(pk_df(pd.DataFrame(ss.purchase_orders)), hide_index=True, width="stretch", alt="발주서 목록")
+    if pos:
+        df = pd.DataFrame(pos)
+        df["입고수량(PK)"] = [po_received(p) for p in pos]
+        df = pk_df(df)
+        df["입고수량"] = [qty_for(p["품목"], po_received(p)) for p in pos]
+        st.dataframe(df.drop(columns=["입고수량(PK)"]), hide_index=True, width="stretch", alt="발주서 목록")
+    else:
+        st.caption("발주서가 없어요. 구매청구에서 발주로 전환하면 여기에 나와요.")
 
 
 @register("recv.general")
