@@ -246,6 +246,16 @@ def main():
             check(not errs, "발주 추천: JS 에러 없음")
             pg.context.close()
 
+            pg, errs = open_app(br, url, 1600, 1000, path="/stock-flow")
+            check(pg.get_by_text("업체", exact=True).count() >= 1 and pg.get_by_placeholder("품목명 · 품목코드 · 규격").count() == 1, "수불현황: 업체 선택과 품목 검색란")
+            pg.get_by_placeholder("품목명 · 품목코드 · 규격").fill("쌀")
+            pg.keyboard.press("Enter")
+            pg.wait_for_timeout(2500)
+            check(pg.get_by_text(re.compile(r"\d+개 품목 중 \d+개를 보고 있어요")).count() == 1, "수불현황: 품목 검색 '쌀' → 표가 좁혀짐")
+            pg.screenshot(path=out / "17_stock_flow_search.png")
+            check(not errs, "수불현황: JS 에러 없음")
+            pg.context.close()
+
             pg, errs = open_app(br, url, 1600, 1000, path="/ai-chat-leadtime")
             pg.get_by_placeholder("재고, 발주, 일정에 대해 물어보세요").fill("쌀 리드타임은?")
             pg.keyboard.press("Enter")

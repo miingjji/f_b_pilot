@@ -107,19 +107,26 @@ LOGIN_CSS = f"""
 .st-key-login-root [data-testid="stHorizontalBlock"] {{ gap: 0; align-items: stretch; }}
 .st-key-login-root ::selection {{ background: {ACCENT}; color: #fff; }}
 
-.st-key-login-brand {{ min-height: 100vh; padding: 3.5rem clamp(2rem, 5vw, 4.5rem); justify-content: space-between; gap: 2rem;
-  background-color: {SIDE};
-  background-image: repeating-linear-gradient(to bottom, transparent 0 55px, rgba(167, 177, 190, 0.07) 55px 56px);   /* 장부의 줄 */ }}
+.st-key-login-brand {{ position: relative; min-height: 100vh; padding: 3.5rem clamp(2rem, 5vw, 4.5rem) clamp(3rem, 9vh, 5.5rem); justify-content: space-between; gap: 2rem; background-color: {SIDE}; isolation: isolate; }}
+.st-key-login-brand::before {{ content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;      /* 장부의 줄: 가운데 빈 면에만 보이고, 로고와 문구 자리에서는 사라진다 */
+  background-image: repeating-linear-gradient(to bottom, transparent 0 55px, rgba(167, 177, 190, 0.13) 55px 56px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 6%, #000 32%, #000 52%, transparent 70%); mask-image: linear-gradient(to bottom, transparent 6%, #000 32%, #000 52%, transparent 70%); }}
 .st-key-login-brand [data-testid="stImage"] img {{ display: block; }}
-.login-pitch {{ max-width: 30rem; }}
-.login-pitch h2 {{ margin: 0 0 1rem; color: {SIDE_TEXT}; font-size: clamp(1.7rem, 2.6vw, 2.35rem); font-weight: 700; line-height: 1.3; letter-spacing: -0.01em; text-wrap: balance; }}
+.login-pitch {{ max-width: 30rem; padding-top: 1.5rem; border-top: 1px solid {SIDE_SHADE}; }}
+.login-pitch h2 {{ margin: 0 0 0.9rem; color: {SIDE_TEXT}; font-size: clamp(1.7rem, 2.6vw, 2.35rem); font-weight: 700; line-height: 1.3; letter-spacing: -0.01em; text-wrap: balance; }}
 .login-pitch p {{ margin: 0; color: {SIDE_MUTED}; font-size: 1rem; line-height: 1.65; }}
 
 .st-key-login-form {{ width: 100%; min-height: 100vh; justify-content: center; align-items: center; padding: 3rem clamp(1.5rem, 4vw, 3rem); }}
-.st-key-login-box {{ width: min(100%, 22.5rem); margin-inline: auto; gap: 1.6rem; animation: login-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }}
-.st-key-login-box h1 {{ font-size: 1.9rem; padding: 0; }}
+.st-key-login-box {{ width: min(100%, 22.5rem); margin-inline: auto; gap: 0.6rem; animation: login-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }}
+.st-key-login-box h1 {{ font-size: 1.9rem; padding: 0 0 0.35rem; }}
+.st-key-login-box [data-testid="InputInstructions"] {{ display: none; }}      /* 'Press Enter to submit form' 안내가 입력칸 안쪽을 가린다 */
+.st-key-login-box [data-testid="stCaptionContainer"] {{ margin-bottom: 1rem; }}
 .st-key-login-box [data-testid="stForm"] {{ border: 0; padding: 0; background: transparent; }}
-.st-key-login-box [data-testid="stFormSubmitButton"] button {{ min-height: 2.9rem; margin-top: 0.4rem; }}
+.st-key-login-box [data-testid="stForm"] [data-testid="stVerticalBlock"] {{ gap: 1.1rem; }}
+.st-key-login-box [data-testid="stWidgetLabel"] p {{ font-size: 0.87rem; font-weight: 600; color: {INK}; }}
+.st-key-login-box [data-testid="stTextInputRootElement"] {{ min-height: 2.9rem; }}
+.st-key-login-box [data-testid="stTextInputRootElement"]:focus-within {{ box-shadow: 0 0 0 1px {ACCENT}; }}      /* 포커스: 1px 테두리 + 1px 링 = 2px 네이비 */
+.st-key-login-box [data-testid="stFormSubmitButton"] button {{ min-height: 2.9rem; margin-top: 0.5rem; }}
 .st-key-login-box [data-testid="stFormSubmitButton"] button p {{ font-size: 1rem; font-weight: 650; }}
 @keyframes login-in {{ from {{ opacity: 0.001; transform: translateY(10px); }} to {{ opacity: 1; transform: none; }} }}
 @media (prefers-reduced-motion: reduce) {{ .st-key-login-box {{ animation: none; }} }}

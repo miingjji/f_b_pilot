@@ -54,7 +54,7 @@ def render_login():
     """처음 접속했을 때 보이는 로그인 화면. 로그인하면 사용자 상태가 채워져 다음 실행부터 앱 본문이 나온다."""
     style.inject_login()
     with st.container(key="login-root"):
-        brand, form = st.columns([1.15, 1], gap=None)
+        brand, form = st.columns([1.2, 1], gap=None)
         with brand.container(key="login-brand"):
             st.image("assets/logo.svg", width=200)
             st.html('<div class="login-pitch"><h2>입고·발주·매출을 한 곳에서,<br>판단은 사람이 합니다.</h2>'
@@ -64,13 +64,13 @@ def render_login():
             if _auth_configured():
                 st.button("로그인", icon=":material/login:", type="primary", width="stretch", on_click=st.login)
                 return
+            st.caption("데모 모드예요. 아이디·비밀번호는 비워 두고 로그인 버튼만 눌러도 들어갈 수 있어요.")
             with st.form("login", border=False):
                 user_id = st.text_input("아이디", placeholder="비워 두어도 됩니다", autocomplete="username")
                 st.text_input("비밀번호", type="password", placeholder="비워 두어도 됩니다", autocomplete="current-password")
-                if st.form_submit_button("로그인", type="primary", width="stretch"):
+                if st.form_submit_button("로그인", icon=":material/arrow_forward:", type="primary", width="stretch"):
                     _demo_login(user_id)
                     st.rerun()
-            st.caption("데모 모드입니다. 아이디·비밀번호 없이 로그인 버튼만 눌러도 들어갈 수 있어요.")
 
 
 def logout():
