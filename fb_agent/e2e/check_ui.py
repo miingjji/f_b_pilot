@@ -5,6 +5,7 @@
 서버를 직접 띄웠다 종료한다. 설치/환경은 e2e/README.md 참고.
 """
 import argparse
+import csv
 import os
 import re
 import subprocess
@@ -17,11 +18,12 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from menu import RAILS, STORES, all_leaves, breadcrumb  # noqa: E402
+from menu import DEFAULT_LEAF, RAILS, STORES, all_leaves, breadcrumb  # noqa: E402
 
 SB = '[data-testid="stSidebar"]'
 MOBILE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
              "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+N_ITEMS = sum(1 for _ in csv.DictReader(open(ROOT / "data" / "real" / "items.csv", encoding="utf-8-sig")))   # 품목 마스터 개수
 failures = []
 
 
@@ -42,11 +44,18 @@ def wait_server(port: int, timeout=40):
     raise RuntimeError("서버가 시작되지 않았습니다.")
 
 
-def open_app(browser, url, width, height, path="", wait="h1", settle=3500, **ctx):
+def login(page):
+    """처음 접속하면 로그인 화면이 나온다. 아이디·비밀번호를 비워 두고 로그인 버튼만 눌러 들어간다 (주소는 그대로라 같은 화면이 열린다)."""
+    page.get_by_role("button", name="로그인").first.wait_for(timeout=30000)
+    page.get_by_role("button", name="로그인").first.click()
+
+
+def open_app(browser, url, width, height, path="", wait="h1:not(:has-text('로그인'))", settle=3500, **ctx):
     page = browser.new_context(viewport={"width": width, "height": height}, **ctx).new_page()
     errs = []
     page.on("pageerror", lambda e: errs.append(str(e)))
     page.goto(url + path)
+    login(page)
     page.wait_for_selector(wait, timeout=30000)
     page.wait_for_timeout(settle)   # 폭 측정 후 재실행까지 대기
     return page, errs
@@ -94,6 +103,33 @@ def main():
         with sync_playwright() as p:
             br = p.chromium.launch()
 
+            # 0) 로그인: 처음 접속하면 로그인 화면, 비워 두고 로그인하면 들어가고 주소는 유지, 로그아웃하면 다시 로그인 화면
+            ctx = br.new_context(viewport={"width": 1440, "height": 860})
+            pg = ctx.new_page()
+            errs = []
+            pg.on("pageerror", lambda e: errs.append(str(e)))
+            pg.goto(url + "/po-auto")
+            pg.get_by_role("button", name="로그인").first.wait_for(timeout=30000)
+            pg.wait_for_timeout(1500)
+            check(pg.get_by_role("heading", name="로그인").count() == 1 and pg.get_by_label("아이디").count() == 1 and pg.get_by_label("비밀번호").count() == 1,
+                  "처음 접속: 로그인 화면(제목·아이디·비밀번호)")
+            check(pg.get_by_placeholder("메뉴 검색").count() == 0, "로그인 전에는 메뉴·본문이 보이지 않음")
+            pg.screenshot(path=out / "00_login_1440.png")
+            pg.get_by_role("button", name="로그인").first.click()
+            pg.wait_for_selector("h1:has-text('자동 발주 추천')", timeout=30000)
+            check(pg.url.rstrip("/").endswith("/po-auto"), "아이디·비밀번호 없이 로그인 → 열려던 화면(/po-auto)으로 들어감")
+            pg.get_by_role("button", name=re.compile("데모 사용자")).click()
+            pg.get_by_role("button", name="로그아웃").click()
+            pg.get_by_role("button", name="로그인").first.wait_for(timeout=15000)
+            check(pg.get_by_role("heading", name="로그인").count() == 1, "로그아웃 → 로그인 화면으로 돌아옴")
+            check(not errs, "로그인: JS 에러 없음")
+            pg.set_viewport_size({"width": 390, "height": 844})
+            pg.wait_for_timeout(1500)
+            check(pg.get_by_role("button", name="로그인").first.is_visible() and pg.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+                  "390px: 로그인 버튼이 보이고 가로 스크롤 없음")
+            pg.screenshot(path=out / "00_login_390.png")
+            ctx.close()
+
             # 1) 넓은 화면: 레일 6개 + 서브 패널 + 본문 + 우측 고정 에이전트
             pg, errs = open_app(br, url, 1920, 1080, wait="text=달력 대시보드")
             check(pg.get_by_role("heading", name="F&B Agent").count() == 1, "1920px: 에이전트가 우측에 고정됨")
@@ -101,9 +137,10 @@ def main():
             check(all(rail_button(pg, i).count() for i in icons), f"좌측 아이콘 {len(icons)}개 표시 ({', '.join(icons)})")
             check(pg.get_by_placeholder("메뉴 검색").count() == 1, "서브 패널 상단에 메뉴 검색창")
             check(pg.locator('[data-testid="stSelectbox"]').count() >= 1, "헤더에 매장 선택 드롭다운")
-            check(pg.get_by_role("button", name="로그인").count() >= 1 and pg.get_by_role("button", name="회원가입").count() >= 1,
-                  "헤더에 로그인/회원가입")
-            check(pg.locator('[data-testid="stMetricValue"]').count() >= 5, "요약 카드 5개")
+            check(pg.get_by_role("button", name=re.compile("데모 사용자")).count() == 1 and pg.get_by_role("button", name="회원가입").count() == 0,
+                  "헤더에 로그인한 사용자 메뉴(로그인·회원가입 버튼은 없음)")
+            check(all(pg.get_by_text(t, exact=True).count() >= 1 for t in ("오늘 발주", "오늘 입고", "확인할 이상징후", "오늘 일정")), "홈: '오늘 할 일' 카드 4개")
+            check(pg.locator('[data-testid="stMetricValue"]').count() >= 2, "요약 카드(매출·객수) 표시")
             pg.screenshot(path=out / "01_home_dock_1920.png")
             check(not errs, "홈: JS 에러 없음")
 
@@ -124,14 +161,8 @@ def main():
             pg.wait_for_timeout(1500)
             pg.screenshot(path=out / "03_sales_daily.png")
 
-            # 3) 매장 전환 → 같은 화면의 값이 바뀜
-            before = first_metric(pg)
-            pg.locator('[data-testid="stSelectbox"]').first.click()
-            pg.get_by_role("option", name="판교점").click()
-            pg.wait_for_timeout(3000)
-            after = first_metric(pg)
-            check(before != after, f"매장 전환(강남→판교)으로 값이 바뀜 ({before} → {after})")
-            check(pg.get_by_text("'판교점' 기준").count() >= 1, "샘플 안내 문구가 선택 매장을 표시")
+            # 3) 매장 선택: 실제 데이터가 있는 매장은 수원점 하나
+            check(pg.locator('[data-testid="stSelectbox"] input').first.input_value() == "수원점", "매장 선택은 수원점")
 
             # 4) 메뉴 검색 (초성 포함)
             pg.get_by_placeholder("메뉴 검색").fill("시간대")
@@ -181,41 +212,45 @@ def main():
             pg.screenshot(path=out / "09_ai_chat.png")
             pg.context.close()
 
-            # 6-2) 품목 마스터 · 재고 입력 필터 · 소모품 발주 추천 · 품목별 리드타임
+            # 6-2) 품목 마스터 · 재고 입력 필터 · 발주 추천 · 품목별 리드타임 (실제 마스터)
             pg, errs = open_app(br, url, 1600, 1000, path="/set-items")
-            check(pg.get_by_text("28개 / 전체 28개").count() == 1, "품목 마스터: 전체 28개 표시")
+            check(pg.get_by_text(f"{N_ITEMS}개 / 전체 {N_ITEMS}개").count() == 1, f"품목 마스터: 전체 {N_ITEMS}개 표시")
             check(pg.get_by_role("button", name="CSV 내려받기").count() == 1 and pg.get_by_role("button", name="JSON 내려받기").count() == 1,
                   "품목 마스터: CSV/JSON 다운로드 버튼")
             pg.locator('[data-testid="stButtonGroup"]').get_by_text("소모품", exact=True).click()
             pg.wait_for_timeout(2000)
-            check(pg.get_by_text("24개 / 전체 28개").count() == 1, "품목 마스터: 대분류 '소모품' 필터 → 24개")
+            n_sup = re.search(rf"(\d+)개 / 전체 {N_ITEMS}개", pg.locator("body").inner_text())
+            check(bool(n_sup) and 0 < int(n_sup.group(1)) < N_ITEMS, f"품목 마스터: 대분류 '소모품' 필터 → {n_sup.group(1) if n_sup else '?'}개")
             pg.screenshot(path=out / "14_item_master.png", full_page=True)
             pg.context.close()
 
             pg, errs = open_app(br, url, 1600, 1000, path="/stock-input")
-            check(pg.get_by_text("28개 표시 / 전체 28개").count() == 1, "재고 입력: 전체 28개 표시")
-            pg.locator('[data-testid="stButtonGroup"]').get_by_text("포장·용기", exact=True).click()
+            shown = lambda: int(re.search(rf"(\d+)개 표시 / 전체 {N_ITEMS}개", pg.locator("body").inner_text()).group(1))
+            n0 = shown()
+            check(0 < n0 < N_ITEMS, f"재고 입력: 기본은 최근 45일 활동 품목만 ({n0}개 / 전체 {N_ITEMS}개)")
+            pg.locator('[data-testid="stButtonGroup"]').get_by_text("저장품", exact=True).click()
             pg.wait_for_timeout(2000)
-            check(pg.get_by_text("10개 표시 / 전체 28개").count() == 1, "재고 입력: 분류 '포장·용기' → 10개")
-            pg.get_by_placeholder("품목명 또는 코드").fill("냅킨")
+            n1 = shown()
+            check(0 < n1 < n0, f"재고 입력: 분류 '저장품' → {n1}개")
+            pg.get_by_placeholder("품목명 또는 코드").fill("쌀")
             pg.keyboard.press("Enter")
             pg.wait_for_timeout(2000)
-            check(pg.get_by_text("1개 표시 / 전체 28개").count() == 1, "재고 입력: 검색 '냅킨' → 1개")
+            check(0 < shown() < n1, f"재고 입력: 검색 '쌀' → {shown()}개")
             pg.screenshot(path=out / "15_stock_input_filtered.png", full_page=True)
             pg.context.close()
 
             pg, errs = open_app(br, url, 1600, 1000, path="/po-auto")
-            check(pg.get_by_text("배달용 1회용 용기(소)").count() >= 1, "자동 발주 추천에 소모품(배달용 용기 소)이 나타남")
-            check(pg.get_by_text("375개").count() >= 1, "소모품 재고가 기본단위(개)로 표시됨")
-            pg.screenshot(path=out / "16_po_auto_supplies.png", full_page=True)
+            check(pg.get_by_role("button", name=re.compile(r"전체 구매청구 만들기")).count() == 1, "자동 발주 추천: 우선 처리 품목 일괄 청구 버튼")
+            check(pg.get_by_text("재고가 언제 떨어지는지").count() >= 1 and pg.get_by_text("발주 추천 (이력 기반)").count() >= 1, "자동 발주 추천: 역할 안내와 이력 기반 화면 링크")
+            pg.screenshot(path=out / "16_po_auto.png", full_page=True)
             check(not errs, "발주 추천: JS 에러 없음")
             pg.context.close()
 
             pg, errs = open_app(br, url, 1600, 1000, path="/ai-chat-leadtime")
-            pg.get_by_placeholder("재고, 발주, 일정에 대해 물어보세요").fill("냅킨 리드타임은?")
+            pg.get_by_placeholder("재고, 발주, 일정에 대해 물어보세요").fill("쌀 리드타임은?")
             pg.keyboard.press("Enter")
             pg.wait_for_timeout(3500)
-            check(pg.get_by_text("D+3").count() >= 1 and pg.get_by_text("팩토리포장").count() >= 1, "에이전트: 품목별 리드타임 답변 (냅킨 → 팩토리포장 D+3)")
+            check(pg.get_by_text(re.compile(r"D\+\d")).count() >= 1, "에이전트: 품목별 리드타임 답변 (쌀 → D+N)")
             pg.context.close()
 
             # 7) 반응형
@@ -263,7 +298,8 @@ def main():
                 pg = br.new_context(viewport={"width": 1600, "height": 1000}).new_page()
                 bad = []
                 for leaf in all_leaves():
-                    pg.goto(f"{url}/{leaf.id}")
+                    pg.goto(url if leaf.id == DEFAULT_LEAF else f"{url}/{leaf.id}")      # 기본 화면(홈)의 주소는 '/' 라서 /home-dashboard 는 '페이지 없음' 대화상자가 뜬다
+                    login(pg)                                  # 주소로 열 때마다 새 접속이라 로그인 화면부터 나온다
                     try:
                         pg.wait_for_selector(f"h1:has-text('{leaf.title}')", timeout=20000)
                     except Exception:

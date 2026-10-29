@@ -5,6 +5,7 @@
 사전 조건: data/real/items.csv (python -m prep.app_master). 환경은 e2e/README.md 참고.
 """
 import argparse
+import csv
 import os
 import re
 import subprocess
@@ -17,6 +18,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 SB = '[data-testid="stSidebar"]'
+N_ITEMS = sum(1 for _ in csv.DictReader(open(ROOT / "data" / "real" / "items.csv", encoding="utf-8-sig")))   # 품목 마스터 개수 (화면 숫자와 맞춘다)
 failures = []
 
 
@@ -37,12 +39,19 @@ def wait_server(port, timeout=60):
     raise RuntimeError("서버가 시작되지 않았습니다.")
 
 
+def login(pg):
+    """처음 접속하면 로그인 화면이 나온다. 아이디·비밀번호를 비워 두고 로그인 버튼만 눌러 들어간다 (주소는 그대로라 같은 화면이 열린다)."""
+    pg.get_by_role("button", name="로그인").first.wait_for(timeout=40000)
+    pg.get_by_role("button", name="로그인").first.click()
+
+
 def open_page(br, url, path="", width=1600, height=1000):
     pg = br.new_context(viewport={"width": width, "height": height}).new_page()
     errs = []
     pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto(url + path)
-    pg.wait_for_selector("h1", timeout=40000)
+    login(pg)
+    pg.wait_for_selector("h1:not(:has-text('로그인'))", timeout=40000)
     pg.wait_for_timeout(3500)
     return pg, errs
 
@@ -64,7 +73,7 @@ def main():
             br = p.chromium.launch()
 
             pg, errs = open_page(br, url)
-            check(pg.get_by_text("실제 데이터 기반 · 품목 855개").count() >= 1, "사이드바에 데이터 종류 표시 (실제 데이터 기반 · 품목 855개)")
+            check(pg.get_by_text(f"실제 데이터 기반 · 품목 {N_ITEMS}개").count() >= 1, f"사이드바에 데이터 종류 표시 (실제 데이터 기반 · 품목 {N_ITEMS}개)")
             check(pg.locator('[data-testid="stSelectbox"] input').first.input_value() == "수원점", "매장 선택이 수원점(실제 재고의 매장)")
             pg.screenshot(path=out / "real_01_home.png")
             check(not errs, "홈: JS 에러 없음")
@@ -76,22 +85,22 @@ def main():
             pg.get_by_role("button", name=re.compile(r"전체 구매청구 만들기")).click()
             pg.wait_for_timeout(2500)
             pg.screenshot(path=out / "real_02_po_auto.png", full_page=False)
-            pg.goto(url + "/po-request-detail")
-            pg.wait_for_selector("h1", timeout=40000)
-            pg.wait_for_timeout(2500)
             pg.context.close()
 
             pg, errs = open_page(br, url, "/stock-input")
-            check(pg.get_by_text("855개 표시 / 전체 855개").count() == 1, "재고 입력: 855개 표시")
+            # 기본은 최근 45일 입고·청구가 있는 품목만 보이고, 분류를 고르면 그 안에서 더 좁혀진다
+            shown = lambda: int(re.search(rf"(\d+)개 표시 / 전체 {N_ITEMS}개", pg.locator("body").inner_text()).group(1))
+            n_default = shown()
+            check(0 < n_default < N_ITEMS, f"재고 입력: 기본은 최근 활동 품목만 ({n_default}개 / 전체 {N_ITEMS}개)")
             pg.locator('[data-testid="stButtonGroup"]').get_by_text("저장품", exact=True).click()
             pg.wait_for_timeout(2500)
-            check(pg.get_by_text(re.compile(r"개 표시 / 전체 855개")).count() == 1 and pg.get_by_text("855개 표시").count() == 0, "분류 '저장품' 필터가 적용됨")
+            check(0 < shown() < n_default, f"분류 '저장품' 필터가 적용됨 ({n_default}개 → {shown()}개)")
             pg.screenshot(path=out / "real_03_stock_input.png")
             pg.context.close()
 
             pg, errs = open_page(br, url, "/set-items")
-            check(pg.get_by_text("855개 / 전체 855개").count() == 1, "품목 마스터: 855개")
-            check(pg.get_by_text("가상 값").count() >= 1, "품목 마스터: 가상 값 안내")
+            check(pg.get_by_text(f"{N_ITEMS}개 / 전체 {N_ITEMS}개").count() == 1, f"품목 마스터: {N_ITEMS}개")
+            check(pg.get_by_text("매장별 재고입력").count() >= 1, "품목 마스터: 현재재고량은 시드 값이라는 안내")
             pg.screenshot(path=out / "real_04_item_master.png")
             pg.context.close()
 
@@ -108,8 +117,8 @@ def main():
             pg.context.close()
 
             pg, errs = open_page(br, url, "/sales-monthly")
-            check(pg.get_by_text("실제 매출입니다").count() == 1, "매출요약: 실제 매출 안내")
-            check(pg.get_by_text("12개월 합계").count() == 1, "매출요약: 오늘 기준 12개월 합계 표시 (2026년 가상 데이터로 채워짐)")
+            check(pg.get_by_text("실제 POS 데이터입니다").count() == 1, "매출요약: 실제 POS 데이터 안내")
+            check(pg.get_by_text("12개월 합계").count() == 1, "매출요약: 12개월 합계 표시")
             pg.screenshot(path=out / "real_07_sales_monthly.png")
             check(not errs, "매출요약: JS 에러 없음")
             pg.context.close()
