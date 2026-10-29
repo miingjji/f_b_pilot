@@ -14,14 +14,14 @@ st.set_page_config(page_title="F&B Pilot", page_icon="assets/logo-mark.svg", lay
 style.inject()
 init_state()
 
+pages = build_pages()
+routing.PAGES = pages
+page = st.navigation(list(pages.values()), position="hidden")   # 메뉴는 nav_ui가 직접 그린다. 로그인 화면보다 먼저 불러야 주소(/po-auto 등)가 로그인 뒤에도 유지된다
+
 if current_user() is None:      # 처음 접속하면 로그인 화면만 보여 준다
     render_login()
     st.stop()
 st.logo("assets/logo.svg", size="large")
-
-pages = build_pages()
-routing.PAGES = pages
-page = st.navigation(list(pages.values()), position="hidden")   # 메뉴는 nav_ui가 직접 그린다
 apply_pending_navigation()
 
 leaf_id = current_leaf_id(page)

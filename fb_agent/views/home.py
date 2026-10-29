@@ -202,7 +202,7 @@ def task_cards(today: date, cal, recs):
             with st.container(border=True, key=f"task-{i}", width="stretch"):
                 st.markdown(f"{t['icon']} **{t['label']}**")
                 if t["n"]:
-                    st.markdown(f"### {':red[' if t['hot'] else '['}{t['n']}{t['unit']}]")
+                    st.markdown(f"### :red[{t['n']}{t['unit']}]" if t["hot"] else f"### {t['n']}{t['unit']}")
                 else:
                     st.markdown(f"### :green[{t['none']}]")
                 st.caption(t["sub"])
