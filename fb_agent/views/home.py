@@ -7,6 +7,7 @@ import streamlit as st
 
 import sales_data as sd
 import style
+from insights import build_alerts
 from calendar_data import (CATEGORIES, MANUAL_CATEGORIES, ORDER_STATUSES, Event, build_events, cell_width, chars_per_line,
                            max_cell_events, new_event, row_height, visible_events)
 from errors import InvalidInputError
@@ -170,21 +171,55 @@ def issue_panel(d: date, by_day: dict, today: date):
         item_list([f":{CATEGORIES[e.category][1]}[●] {day:%m/%d}({dow(day)}) {e.title}" for day, e in upcoming], "예정된 이슈가 없어요.")
 
 
-def summary_cards(today: date, cal, recs):
+def today_tasks(today: date, cal, recs) -> list[dict]:
+    """오늘 처리할 일 4가지: 발주 · 입고 · 이상징후 · 일정. 각 항목은 건수와 이동할 화면을 가진다."""
+    order = [r for r in recs if r.status in ORDER_STATUSES
+             and (r.order_date == today or r.status in ("URGENT", "ORDER_NOW"))]
+    n_urgent = sum(r.status == "URGENT" for r in order)
+    arriving = {r.item for r in recs if r.status in ORDER_STATUSES and r.arrival_date == today}
+    waiting = [po for po in ss.get("purchase_orders", []) if po["상태"] == "입고대기" and po["입고예정"] <= today]
+    n_late = sum(po["입고예정"] < today for po in waiting)
+    alerts = [a for a in build_alerts(get_store(), sd.anchor(today), recs) if a.level != "info"]
+    n_high = sum(a.level == "high" for a in alerts)
+    evs = [e for e in build_events(ss.events, recs, cal, today, today).get(today, []) if e.category != "closed"]
+    return [
+        dict(icon=":material/local_shipping:", label="오늘 발주", n=len(order), unit="개 품목",
+             sub=f"긴급 {n_urgent}개 포함" if n_urgent else "긴급 없음", hot=n_urgent > 0, none="발주할 것 없음", leaf="po-auto", go="발주 추천 보기"),
+        dict(icon=":material/move_to_inbox:", label="오늘 입고", n=len(arriving | {po["품목"] for po in waiting}), unit="개 품목",
+             sub=(f"입고 대기 발주서 {len(waiting)}건" + (f" · 지연 {n_late}건" if n_late else "")) if waiting else "입고 대기 발주서 없음",
+             hot=n_late > 0, none="입고 예정 없음", leaf="recv-by-po", go="입고 처리하기"),
+        dict(icon=":material/notifications_active:", label="확인할 이상징후", n=len(alerts), unit="건",
+             sub=f"긴급 {n_high}건 포함" if n_high else "긴급 없음", hot=n_high > 0, none="이상 없음", leaf="ai-alerts", go="알림 보기"),
+        dict(icon=":material/event:", label="오늘 일정", n=len(evs), unit="건",
+             sub=evs[0].title if evs else "등록된 일정 없음", hot=False, none="일정 없음", leaf=None, go=""),
+    ]
+
+
+def task_cards(today: date, cal, recs):
+    st.subheader("오늘 할 일", width="content")
+    with st.container(horizontal=True):
+        for i, t in enumerate(today_tasks(today, cal, recs)):
+            with st.container(border=True, key=f"task-{i}", width="stretch"):
+                st.markdown(f"{t['icon']} **{t['label']}**")
+                if t["n"]:
+                    st.markdown(f"### {':red[' if t['hot'] else '['}{t['n']}{t['unit']}]")
+                else:
+                    st.markdown(f"### :green[{t['none']}]")
+                st.caption(t["sub"])
+                if t["leaf"]:
+                    st.button(t["go"], key=f"task_go_{i}", icon=":material/arrow_forward:", type="tertiary",
+                              on_click=open_page, args=(t["leaf"],))
+
+
+def summary_cards(today: date):
     ref = sd.latest_day(today)                                    # 오늘이 데이터 끝보다 뒤이거나 쉬는 날이면 마지막 영업일
     now = sd.day_sales(ref) if ref else None
     last_week = sd.day_sales(ref - timedelta(days=7)) if ref else None
-    week = build_events(ss.events, recs, cal, today, today + timedelta(days=6))
-    n_week = sum(e.category != "closed" for evs in week.values() for e in evs)
-    n_order = sum(r.status in ("URGENT", "ORDER_NOW", "ORDER_SOON") for r in recs)
-    n_urgent = sum(r.status == "URGENT" for r in recs)
     when = f"{ref:%m-%d}" if ref else "최근"
     cards = [
         (f"{when} 매출", won_short(now["sales"]) if now else "데이터 없음",
          (pct_delta(now["sales"], last_week["sales"]) + " 전주 같은 요일") if now and last_week else None),
         (f"{when} 객수", f"{now['customers']:,}명" if now else "데이터 없음", f"객단가 {won_short(now['ticket'])}" if now else None),
-        ("발주 필요 품목", f"{n_order}개", f"긴급 {n_urgent}개"),
-        ("7일 내 일정", f"{n_week}건", f"오늘 {sum(e.category != 'closed' for e in week.get(today, []))}건"),
     ]
     with st.container(horizontal=True):
         for i, (label, value, delta) in enumerate(cards):
@@ -234,7 +269,8 @@ def draw_grid(weeks: list, by_day: dict, today: date, sel: date, month: int | No
 @register("home.dashboard")
 def dashboard(leaf: Leaf):
     today, cal, recs = get_today(), get_calendar(), get_recs()
-    summary_cards(today, cal, recs)
+    task_cards(today, cal, recs)
+    summary_cards(today)
     sel = ss.sel_day
     expanded = bool(ss.get("cal_expanded", False))
     m = ss.cal_month
