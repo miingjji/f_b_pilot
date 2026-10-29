@@ -89,6 +89,7 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT}; background:
 [data-testid="stSidebar"] button[kind="secondary"] {{ background: {SIDE_SHADE}; color: {SIDE_TEXT}; border-color: #3A5A86; }}
 [data-testid="stSidebar"] button[kind="secondary"]:hover {{ border-color: {SIDE_MUTED}; color: #FFFFFF; }}
 [data-testid="stSidebar"] button[kind="primary"] {{ background: {SIDE_TEXT}; color: {HEADING}; border-color: {SIDE_TEXT}; font-weight: 700; }}
+[data-testid="stSidebar"] [class*="st-key-rail_"] button {{ padding-inline: 0; }}   /* 아이콘만 든 좁은 레일 버튼: 선택된(primary) 버튼은 안쪽 여백이 더 커서 아이콘 칸이 4px 로 줄어 잘린다 ('(' 로 보임) */
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"], [data-testid="stSidebar"] [data-testid="stCaptionContainer"] * {{ color: {SIDE_MUTED}; }}
 [data-testid="stSidebar"] [data-testid="stExpander"] details {{ background: transparent; border: 0; box-shadow: none; }}   /* 메뉴 묶음은 테두리 없이 (버튼 안에 또 테두리 상자를 겹치지 않는다) */
 [data-testid="stSidebar"] [data-testid="stExpander"] summary {{ color: {SIDE_TEXT}; }}
@@ -96,6 +97,44 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: {ACCENT}; background:
 /* style 만 담은 st.html 이 빈 줄을 만들지 않게 */
 [data-testid="stHtml"]:has(> style) {{ display: none; }}
 """
+
+
+LOGIN_CSS = f"""
+/* ---- 로그인 화면: 왼쪽 진한 네이비 면(사이드바와 같은 색) + 오른쪽 미스트 바탕 폼. 이 화면에서만 주입한다 ---- */
+[data-testid="stHeader"] {{ display: none; }}
+.stMainBlockContainer {{ padding: 0 !important; max-width: none !important; }}
+.stMainBlockContainer > [data-testid="stVerticalBlock"] {{ gap: 0; }}
+.st-key-login-root [data-testid="stHorizontalBlock"] {{ gap: 0; align-items: stretch; }}
+.st-key-login-root ::selection {{ background: {ACCENT}; color: #fff; }}
+
+.st-key-login-brand {{ min-height: 100vh; padding: 3.5rem clamp(2rem, 5vw, 4.5rem); justify-content: space-between; gap: 2rem;
+  background-color: {SIDE};
+  background-image: repeating-linear-gradient(to bottom, transparent 0 55px, rgba(167, 177, 190, 0.07) 55px 56px);   /* 장부의 줄 */ }}
+.st-key-login-brand [data-testid="stImage"] img {{ display: block; }}
+.login-pitch {{ max-width: 30rem; }}
+.login-pitch h2 {{ margin: 0 0 1rem; color: {SIDE_TEXT}; font-size: clamp(1.7rem, 2.6vw, 2.35rem); font-weight: 700; line-height: 1.3; letter-spacing: -0.01em; text-wrap: balance; }}
+.login-pitch p {{ margin: 0; color: {SIDE_MUTED}; font-size: 1rem; line-height: 1.65; }}
+
+.st-key-login-form {{ width: 100%; min-height: 100vh; justify-content: center; align-items: center; padding: 3rem clamp(1.5rem, 4vw, 3rem); }}
+.st-key-login-box {{ width: min(100%, 22.5rem); margin-inline: auto; gap: 1.6rem; animation: login-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }}
+.st-key-login-box h1 {{ font-size: 1.9rem; padding: 0; }}
+.st-key-login-box [data-testid="stForm"] {{ border: 0; padding: 0; background: transparent; }}
+.st-key-login-box [data-testid="stFormSubmitButton"] button {{ min-height: 2.9rem; margin-top: 0.4rem; }}
+.st-key-login-box [data-testid="stFormSubmitButton"] button p {{ font-size: 1rem; font-weight: 650; }}
+@keyframes login-in {{ from {{ opacity: 0.001; transform: translateY(10px); }} to {{ opacity: 1; transform: none; }} }}
+@media (prefers-reduced-motion: reduce) {{ .st-key-login-box {{ animation: none; }} }}
+
+@media (max-width: 640px) {{        /* 좁은 화면: 네이비 면은 로고만 남은 얇은 띠로 접는다 */
+  .st-key-login-brand {{ min-height: 0; padding: 1.25rem 1.5rem; }}
+  .st-key-login-brand .login-pitch {{ display: none; }}
+  .st-key-login-form {{ min-height: 0; padding: 2rem 1.5rem 3rem; align-items: stretch; }}
+  .st-key-login-box {{ width: 100%; }}
+}}
+"""
+
+
+def inject_login():
+    st.html(f"<style>{LOGIN_CSS}</style>")
 
 
 def inject():
