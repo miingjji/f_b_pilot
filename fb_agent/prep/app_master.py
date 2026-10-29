@@ -257,7 +257,7 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
         stock_src = "실사재고"
         if (active is not None and usage and r["품목구분"] != "소모품" and r["품목코드_RMS"] != "없음" and r["품목코드_RMS"] not in active
                 and stock <= DORMANT_STOCK_DAYS * usage):   # 식재료: 최근 45일 입고·청구가 없고 재고도 거의 없다 = 지금은 쓰지 않는 품목(업체 변경·시즌 종료·단종). 소모품은 0이 세지 않은 것일 수 있어 따로 둔다
-            usage, usage_src, months_used = 0.0, DORMANT, 0
+            usage, usage_src, months_used = None, DORMANT, 0    # 지금 소비를 모른다: 0으로 단정하지 않고 비워 둔다 (앱에서는 '데이터 없음')
         if r["품목구분"] == "소모품" and stock == 0 and usage:      # 쓰는 소모품이 실사에서 0으로만 잡혀 있으면 세지 않은 것: 재고를 모른다
             stock, stock_src = None, NO_DATA
 
@@ -265,8 +265,8 @@ def build_app_master(items: pd.DataFrame, suppliers: pd.DataFrame, std: pd.DataF
         s_lead, _s_src = _supplier_lead(r["발주처"], sup, measured, user)
         rows.append({
             "품목코드": code, "품목명": r["품명"], "대분류": r["품목구분"], "중분류": r["계정명"], "기본단위": unit,
-            "PK당수량": pk, "BOX당PK": 1.0, "EA당수량": ea, "일소비량": usage,
-            "안전재고량": "" if lead is None else round(usage * safety_days(lead), 4),
+            "PK당수량": pk, "BOX당PK": 1.0, "EA당수량": ea, "일소비량": "" if usage is None else usage,
+            "안전재고량": "" if lead is None or usage is None else round(usage * safety_days(lead), 4),
             "현재재고량": "" if stock is None else float(stock),
             "리드타임": "" if lead is None or lead == s_lead else lead, "거래처": r["발주처"],
             "규격": r["규격"], "일소비량_출처": usage_src, "일소비량_입고월수": months_used, "재고_출처": stock_src, "리드타임_출처": lead_src,
@@ -312,7 +312,7 @@ README = """# 실제 데이터 기반 앱 마스터
 | 품목·규격·업체·재고(식재료) | 정리된 실사재고·입고내역 | |
 | 일 소비량 | `수불부 12개월 실적`(12개월 입고 + 기초 실사재고 − 기말 실사재고) ÷ 일수, 없으면 `표준사용량`, 그다음 `입고 기반 추정` | 12개월 동안 입고가 없으면 소비 0 (`최근 12개월 입고 없음`) |
 | 현재 재고 | `실사재고` | 쓰는 소모품이 실사에서 0으로만 잡혀 세지 않은 것이면 비움 |
-| 지금 쓰는 식재료 | 식재료인데 최근 45일(수불부 입고일·구매청구 자료 끝 기준) 입고도 구매청구도 없고 마지막 실사 재고가 일 소비량의 3일치 이하이면 소비 0 (`휴면(최근 45일 입고·청구 없음, 재고 거의 없음)`) — 업체 변경·시즌 종료·단종 | 입고나 청구가 다시 생기면 다음에 마스터를 만들 때 살아난다 (구매청구·수불부를 새로 받으면 `python -m prep.app_master`) |
+| 지금 쓰는 식재료 | 식재료인데 최근 45일(수불부 입고일·구매청구 자료 끝 기준) 입고도 구매청구도 없고 마지막 실사 재고가 일 소비량의 3일치 이하이면 일소비량을 비워 둔다 (`휴면(최근 45일 입고·청구 없음, 재고 거의 없음)`, 앱에서 '데이터 없음') — 업체 변경·시즌 종료·단종 | 입고나 청구가 다시 생기면 다음에 마스터를 만들 때 살아난다 (구매청구·수불부를 새로 받으면 `python -m prep.app_master`) |
 | 업체 입고 요일 | `수불부 입고 실적`(최근 12개월 일자별 입고에서 입고일의 3% 이상인 요일, 입고일 20일 이상인 업체). 일요일 입고는 CK만 한다(사용자 확인) | 실적이 모자라면 월~토 (`사용자 지정(일요일 입고는 CK만)`) |
 | 안전 재고 | 정책 값: 일 소비량 × 안전 일수(리드타임 동안 매출이 예측보다 클 위험 95%를 덮는 일수, 1~2일) | 리드타임이 없으면 비움 |
 | 리드타임 | `사용자 지정`(`사용자지정_업체일정.csv`), 품명 태그(수불부), `구매청구 실측`(2024~2026 청구→입고 일수 90분위, 청구 10건 이상 업체) | 비움 |

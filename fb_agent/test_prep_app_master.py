@@ -154,11 +154,11 @@ class AppMaster(unittest.TestCase):
         self.assertEqual((by.loc["F1", "리드타임"], by.loc["F1", "리드타임_출처"]), ("", MEASURED))   # 업체 실측(3)을 그대로 쓰니 품목 값은 비움
         self.assertEqual((by.loc["S1", "리드타임"], by.loc["S1", "리드타임_출처"]), ("", NO_DATA))
 
-    def test_dormant_food_items_have_no_usage(self):
+    def test_dormant_food_items_have_unknown_usage(self):
         usage_hist = {"F1": (50.0, 50000.0, 7), "F2": (3.0, 3000.0, 2), "S2": (3.0, 3.0, 1)}
         items, _, _ = build_app_master(ITEMS, SUPPLIERS, STD, measured=MEAS, usage_hist=usage_hist, drop_unscheduled=False, active={"F1", "S2"})
         by = items.set_index("품목코드")
-        self.assertEqual((by.loc["F2", "일소비량"], by.loc["F2", "일소비량_출처"]), (0.0, DORMANT))      # 식재료, 최근 45일 입고·청구 없음, 재고 0
+        self.assertEqual((by.loc["F2", "일소비량"], by.loc["F2", "안전재고량"], by.loc["F2", "일소비량_출처"]), ("", "", DORMANT))      # 식재료, 최근 45일 입고·청구 없음, 재고 0: 소비를 모른다 (앱에서 '데이터 없음')
         self.assertEqual(by.loc["F1", "일소비량_출처"], "수불부 12개월 실적")                              # 최근에 입고·청구가 있으면 그대로
         self.assertEqual(by.loc["S2", "일소비량_출처"], "수불부 12개월 실적")
         # 최근 활동이 없어도 재고가 일 소비량의 3일치보다 많으면 그 재고를 쓰고 있을 수 있어 휴면으로 보지 않는다 (F1 재고 3,000 vs 일 소비 500g × 3 = 1,500)
