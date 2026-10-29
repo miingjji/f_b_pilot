@@ -1,5 +1,7 @@
 streamlit>=1.65
 pandas
+numpy
+altair
 openpyxl
 xlrd
 odfpy
