@@ -548,8 +548,15 @@ def rec_row(item, g, r):
                      on_click=request_and_open, args=(item.name, r.order_packs, r.arrival_date, "자동 발주 추천"))
 
 
+def other_view_link(leaf_id: str, label: str):
+    if leaf_id in routing.PAGES:                                    # 앱 안에서만 (테스트 화면에는 페이지 목록이 없다)
+        st.page_link(routing.PAGES[leaf_id], label=label, icon=":material/arrow_forward:")
+
+
 @register("po.auto")
 def po_auto(leaf: Leaf):
+    st.caption("**재고가 언제 떨어지는지** 기준으로 발주할 품목을 보여 줍니다. 평소 주문 습관과 수량 근거까지 보려면 '발주 추천 (이력 기반)'을 보세요.")
+    other_view_link("po-engine", "발주 추천 (이력 기반)")
     short = stock_note_short()
     with st.expander(short or f"'{get_store()}' 현재 재고 기준이에요", icon=":material/info:"):
         if short:
@@ -638,6 +645,22 @@ def _qty(q, unit) -> str:
     return f"{q:g} {unit}"
 
 
+def qty_range(q: float, unit: str, err: float) -> str:
+    """권장 수량 ± 과거 검증 평균 오차(err, 0~1)를 발주 단위에 맞춰 '2~4 박스' 꼴로. 낱개 단위는 1 아래로 내려가지 않는다."""
+    step = 0.1 if unit in ("킬로그램", "kg") else 1.0
+    lo, hi = max(step, round(q * (1 - err) / step) * step), max(step, round(q * (1 + err) / step) * step)
+    return _qty(hi, unit) if lo == hi else f"{lo:g}~{hi:g} {unit}"
+
+
+def reliability_line(ev: dict | None) -> str:
+    """과거 검증에서 확인한 정확도 한 줄 (검증 자료가 없으면 빈 문자열)."""
+    if not ev:
+        return ""
+    t = ev["시점"]["엔진"]
+    return (f"과거 검증(학습에 쓰지 않은 {ev['검증기간']}) 기준 — 시점: 추천한 품목의 **{t['정밀도'] * 100:.0f}%** 가 실제로 그날 발주됐고 "
+            f"실제 발주의 **{t['재현율'] * 100:.0f}%** 를 잡았어요. 수량: 평균 **±{ev['수량']['엔진']:.0f}%** 오차.")
+
+
 def engine_requests(o: pd.DataFrame):
     """추천 표 → 앱 구매청구 목록. 품목코드로 앱 마스터와 맞추고, 발주단위 수량을 PK 로 환산한다. 마스터에 없는 품목은 따로 돌려준다."""
     by_code = {it.code: it for it in ITEMS.values() if it.code}
@@ -673,6 +696,9 @@ def po_engine(leaf: Leaf):
         return
     stamp = _engine_stamp()
     e = _engine(stamp)
+    ev = reorder_engine.load_eval()
+    st.caption("**평소 주문 습관**으로 '무엇을 · 언제 · 얼마나' 발주할지 제안합니다. 재고가 떨어지는 시점 기준으로 보려면 '자동 발주 추천'을 보세요.")
+    other_view_link("po-auto", "자동 발주 추천 (재고 기준)")
     c_day, c_state = st.columns([3, 7], vertical_alignment="bottom")
     day = c_day.date_input("기준일 (발주하는 날)", value=get_today(), key="po_engine_day")
     if day > e.data_end + timedelta(days=3):
@@ -711,6 +737,8 @@ def po_engine(leaf: Leaf):
             st.badge(f"재고 확인 필요 {n_check}건", color="orange" if n_check else "gray")
 
     st.subheader(f"오늘 발주 추천 ({len(orders)}건)")
+    if reliability_line(ev):
+        st.caption(f":material/verified: {reliability_line(ev)}")
     if orders.empty:
         n_day, n_wait = int((t["상태"].isin(["발주", "보류", "재고 확인"])).sum()), int((t["상태"] == "보류").sum())
         if n_day == 0:
@@ -726,16 +754,19 @@ def po_engine(leaf: Leaf):
         pk = {r["item"]: r["packs"] for r in reqs}
         df = pd.DataFrame({
             "거래처": o["거래처"], "품목": o["품목"], "규격": o["규격"],
-            "권장 수량": [_qty(q, u) for q, u in zip(o["권장수량"], o["단위"])], "상한": [_qty(q, u) for q, u in zip(o["상한수량"], o["단위"])],
+            "권장 수량": [_qty(q, u) for q, u in zip(o["권장수량"], o["단위"])],
+            "예상 범위": [qty_range(q, u, ev["수량"]["엔진"] / 100) if ev else "" for q, u in zip(o["권장수량"], o["단위"])],
+            "상한": [_qty(q, u) for q, u in zip(o["상한수량"], o["단위"])],
             "앱 청구 수량": [qty_for(by_code[c], pk[by_code[c]]) if c in by_code else "마스터 미등록" for c in o["코드"]],
             "입고 예정": [fmt_date(d) for d in o["입고예정일"]], "직전 발주": o["직전발주"],
             "예상 재고": [_qty(round(r, 1), u) if pd.notna(r) else "" for r, u in zip(o["재고"], o["단위"])], "재고 주의": o["재고주의"],
             "발주 확률": (o["확률"] * 100).round(), "시즌": o["시즌"], "근거": o["사유"]})
-        view_cols = [c for c in df.columns if c not in ("거래처", "근거")]
+        view_cols = [c for c in df.columns if c not in ("거래처", "근거", "상한")]      # 상한은 예상 범위로 대신 보여 주고 내려받기 CSV 에만 둔다
         c_bulk.button(f"구매청구 만들기 ({len(reqs)}건)", icon=":material/add_shopping_cart:", type="primary", width="stretch", on_click=add_engine_requests, args=(reqs,), disabled=not reqs,
                       help="선택한 모든 거래처의 추천을 한 번에 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다. 업체별로 만들려면 아래 각 거래처의 버튼을 누르세요.")
         cols = {"발주 확률": st.column_config.ProgressColumn("발주 확률", min_value=0, max_value=100, format="%d%%",
                                                           help="이 품목을 오늘 발주할 가능성. 평소 주문 주기와 마지막 주문 후 경과일로 계산"),
+                "예상 범위": st.column_config.TextColumn(help="권장 수량에 과거 검증 평균 오차를 적용한 범위예요. 품목마다 오차는 다를 수 있어, 실제 주문량이 이 안에 들어올 가능성이 높다는 뜻의 참고값입니다."),
                 "상한": st.column_config.TextColumn(help="평소보다 많이 팔릴 때를 대비한 여유 수량(25% 더)")}
         for sup_name, g in o.groupby("거래처", sort=True):
             sub, _miss = engine_requests(g)
@@ -747,7 +778,7 @@ def po_engine(leaf: Leaf):
                          on_click=add_engine_requests, args=(sub,), disabled=not sub, help=f"{sup_name} 추천만 구매청구로 만듭니다. 이미 청구한 품목은 건너뜁니다.")
                 gd = df[df["거래처"] == sup_name]
                 st.dataframe(gd[view_cols], hide_index=True, width="stretch", alt=f"{sup_name} 발주 추천", column_config=cols)
-                with st.expander("근거 보기"):
+                with st.expander("근거 보기", expanded=len(gd) <= 3):
                     st.markdown("\n".join(f"- **{n}**: {w}" for n, w in zip(gd["품목"], gd["근거"])))
         if missing:
             st.caption(f":material/info: 앱 품목 마스터에 없어 구매청구를 만들 수 없는 품목 {len(missing)}건: {', '.join(missing)}")
