@@ -5,6 +5,7 @@
 import streamlit as st
 
 import style
+from config import ASSETS
 from menu import STORES, breadcrumb, icon_of
 from state import toggle_favorite
 
@@ -56,7 +57,7 @@ def render_login():
     with st.container(key="login-root"):
         brand, form = st.columns([1.2, 1], gap=None)
         with brand.container(key="login-brand"):
-            st.image("assets/logo.svg", width=200)
+            st.image(str(ASSETS / "logo.svg"), width=200)
             st.html('<div class="login-pitch"><h2>입고·발주·매출을 한 곳에서,<br>판단은 사람이 합니다.</h2>'
                     '<p>재고와 매출 흐름으로 오늘 할 일을 먼저 보여 드립니다.</p></div>')
         with form.container(key="login-form"), st.container(key="login-box"):

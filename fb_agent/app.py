@@ -5,12 +5,13 @@ import style
 from agent_context import build_context
 from agent_panel import agent_dock, agent_drawer
 from auth_ui import current_user, render_header, render_login
+from config import ASSETS
 from menu import get_leaf
 from nav_ui import apply_pending_navigation, build_pages, current_leaf_id, render_sidebar
 from state import DOCK_RATIO, agent_mode, init_state
 from viewport import mount_probe
 
-st.set_page_config(page_title="F&B Pilot", page_icon="assets/logo-mark.svg", layout="wide")
+st.set_page_config(page_title="F&B Pilot", page_icon=str(ASSETS / "logo-mark.svg"), layout="wide")
 style.inject()
 init_state()
 
@@ -21,7 +22,7 @@ page = st.navigation(list(pages.values()), position="hidden")   # 메뉴는 nav_
 if current_user() is None:      # 처음 접속하면 로그인 화면만 보여 준다
     render_login()
     st.stop()
-st.logo("assets/logo.svg", size="large")
+st.logo(str(ASSETS / "logo.svg"), size="large")
 apply_pending_navigation()
 
 leaf_id = current_leaf_id(page)

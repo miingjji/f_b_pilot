@@ -7,7 +7,9 @@ import os
 from datetime import date
 from pathlib import Path
 
-REAL_DIR = Path(__file__).resolve().parent / "data" / "real"
+APP_DIR = Path(__file__).resolve().parent
+ASSETS = APP_DIR / "assets"          # 로고 등. 배포 환경은 저장소 루트에서 실행하므로 현재 폴더 기준 상대경로를 쓰지 않는다
+REAL_DIR = APP_DIR / "data" / "real"
 MASTER_DIR = Path(os.environ["FB_MASTER_DIR"]) if os.environ.get("FB_MASTER_DIR") else REAL_DIR
 TEST_MASTER = MASTER_DIR != REAL_DIR
 STORES = ("수원점",)
