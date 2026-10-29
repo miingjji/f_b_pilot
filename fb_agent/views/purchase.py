@@ -1225,9 +1225,12 @@ def io_transfer(leaf: Leaf):
 def stock_flow(leaf: Leaf):
     today = get_today()
     week_ago = today - timedelta(days=7)
+    st.caption("최근 7일 수불: 기초 + 입고 − 소비 − 손망실 − 반품 = 기말 (소비는 일 소비량 기준 추정). 수량은 품목의 단위(병·박스·팩·개 등)로 보여줘요.")
+    results = [(it, g, r) for it, g, r in current_results() if it.usage_known]       # 일 소비량 근거가 없으면 주간 출고를 계산할 수 없다
+    pool = {it.name for it in item_filter("sf", [it for it, _g, _r in results])}      # 업체 선택 + 품목명·코드·규격 검색
     rows = []
-    for it, g, _r in current_results():
-        if not it.usage_known:                           # 일 소비량 근거가 없으면 주간 출고를 계산할 수 없다
+    for it, g, _r in results:
+        if it.name not in pool:
             continue
         pk = it.pk_weight_g
         unit, f = display_unit(it)                       # 병·캔이 있으면 낱개, 없으면 품목의 발주단위로 센다
@@ -1238,7 +1241,8 @@ def stock_flow(leaf: Leaf):
         end = g / pk
         rows.append({"품목": it.name, "단위": unit, "기초": round((end - inn + out + loss + ret) * f, 1), "입고": round(inn * f, 1),
                      "소비": round(out * f, 1), "손망실": round(loss * f, 1), "반품": round(ret * f, 1), "기말": round(end * f, 1)})
-    st.caption("최근 7일 수불: 기초 + 입고 − 소비 − 손망실 − 반품 = 기말 (소비는 일 소비량 기준 추정). 수량은 품목의 단위(병·박스·팩·개 등)로 보여줘요.")
+    if len(rows) != len(results):
+        st.caption(f"{len(results)}개 품목 중 {len(rows)}개를 보고 있어요.")
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", alt="최근 7일 수불현황")
 
 
