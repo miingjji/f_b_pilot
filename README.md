@@ -72,9 +72,9 @@ Claude에게 "매장 관리자가 매일 아침 발주·재고·매출을 한 �
 
 **Claude Code 작업 화면 6장** (`docs/evidence/`)
 
-1. **원본 파일 확인** — 마크다운으로 변환해 올린 수불부 20개를 찾고, 4월 파일이 3월 복사본이 아니라 제목만 잘못 남은 4월 데이터임을 해시·합계 대조로 밝혔습니다.
+1. **원본 파일 확인** — 마크다운으로 변환해 올린 수불부 20개를 찾고, 이 과정 이후 24년도 수불부 파일도 추가해서 넣고 진행하였습니다.
    ![원본 파일 확인](docs/evidence/1-markdown-cleaning.png)
-2. **가상 데이터 제거** — 가상 값을 지우고 실측으로 바꾼 뒤 테스트 353개 통과를 확인했습니다.
+2. **가상 데이터 제거** — 가상 값을 지우고 실제 데이터로만 활용하였습니다.
    ![가상 데이터 제거](docs/evidence/2-remove-synthetic-data.png)
 3. **검증 설계** — 학습·검증·보류 기간을 나누고, 단순 기준선을 먼저 만들어 비교하기로 했습니다.
    ![검증 설계](docs/evidence/3-baseline-first-validation.png)
@@ -82,7 +82,8 @@ Claude에게 "매장 관리자가 매일 아침 발주·재고·매출을 한 �
    ![알고리즘 구조](docs/evidence/4-algorithm-structure.png)
 5. **현장 규칙 검증** — 사용자가 준 휴점 규칙이 2025·2026년 무매출일 24일을 모두 설명함을 데이터로 확인했습니다.
    ![휴점 규칙 검증](docs/evidence/5-closure-rules-verified.png)
-6. ![BOM 가설과 검증 계획](docs/evidence/6-bom-hypothesis-validation-plan.png)
+6. **BOM 활용 시도** — BOM에 메뉴 판매량을 곱해 식재료 사용량을 계산해 봤지만, 월말 재고 오차가 63%로 기존 방식보다 커서 적용하지 않았습니다.   
+   ![BOM 가설과 검증 계획](docs/evidence/6-bom-hypothesis-validation-plan.png)
 
 자동 테스트 440개 통과 (`test_inventory_sim.py`, `test_reorder_engine.py`, `test_sales_forecast.py`, `test_stock_sim.py`, `test_prep_*.py` 등). 방법·수치 문서는 `fb_agent/docs/INVENTORY_SIM.md`, `DATA_CLEANING.md`, `LEDGER_RECONCILE.md`에 있습니다.
 
