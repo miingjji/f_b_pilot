@@ -6,12 +6,13 @@
 
 재고(실사·폐기·로스)가 아직 없다. 그래서 '언제'는 품목의 주문 습관으로, '얼마나'는 평소 주문량으로 맞추고, 재고가 들어오면 recommend(on_hand=...) 로 실제 재고를 쓴다.
 (재생 평가에서 확인한 것: 수요×소비율로 수량을 새로 계산하면 오차 43%, 재고를 추정해 시점을 정하면 F1 58% 로 둘 다 단순 기준선보다 나빴다.
- 주문은 '1팩·2팩' 같은 습관적인 단위라 평소 주문량이 가장 좋은 기준이고, 매출은 그 위에서 조금만 조정한다.)
+ 주문은 '1팩·2팩' 같은 습관적인 단위라 평소 주문량이 가장 좋은 기준이다. 평소 주문량을 같은 요일 기준으로 잡으면 수량 오차가 31%→26% 로 줄었고(2024-04~2026-10, 월 단위로 22개월 연속),
+ 거기에 매출 규모비를 곱하면 오히려 33% 로 나빠져서 규모비 조정은 뺐다.)
 
 시점   발주 확률 = 로지스틱(마지막 주문 후 경과일 ÷ 평소 주기, 주기, 주문 횟수, 품목의 요일 습관, 예상 매출 규모).
        확률 ≥ 임계값이면 '발주'. 업체 발주 요일·영업일이 아니면 '발주일 아님'. 모델 파일이 없으면 '경과일 ≥ 평소 주기' 규칙으로 대신한다.
-수량   평소 주문량(최근 4회 중앙값) × 규모비^β.  규모비 = 앞으로 커버할 기간의 예측 매출 ÷ 평소 매출. 매출이 낮을 때 줄이고(β=0.25), 높을 때 조금 늘린다(β=0.5).
-       반올림(올림은 오차가 더 컸다). 상한수량은 여유를 둔 값(25% 더).
+수량   평소 주문량 = 오늘과 같은 요일의 최근 3회 주문량 중앙값 (같은 요일 주문이 2회 미만이면 직전 4회 중앙값). 반올림(올림은 오차가 더 컸다).
+       상한수량은 규모비(앞으로 커버할 기간의 예측 매출 ÷ 평소 매출)^0.5 로 매출이 높을 때를 반영한 값에 여유 25% 를 더한 값.
 시즌 품목  최근 12개월 중 4개월 이상 주문이 없던 품목. 비수기(작년 같은 달 주문 없음 + 최근 45일 주문 없음)는 추천하지 않고,
        작년 같은 달에 주문이 있었는데 아직 없으면 '시즌 시작 예상'으로 알린다.
 재고 확인  주문 간격 중앙값이 14일보다 길어 재고 없이는 시점 판단이 불가능한 품목.
@@ -71,6 +72,17 @@ def prf(y: np.ndarray, pred: np.ndarray) -> tuple[float, float, float]:
     p = tp / max(1.0, float(pred.sum()))
     r = tp / max(1.0, float(y.sum()))
     return p, r, (2 * p * r / (p + r) if p + r else 0.0)
+
+
+SAME_DAY_N = 3          # 평소 주문량: 같은 요일 최근 이 횟수의 중앙값
+SAME_DAY_MIN = 2        # 같은 요일 주문이 이만큼 안 되면 직전 4회 중앙값으로 대신한다
+
+
+def usual_qty(past: pd.DataFrame, D: date) -> float:
+    """평소 주문량. past = D 이전 주문(오래된 것부터, 열 청구일자·수량). D 와 같은 요일의 최근 SAME_DAY_N 회 중앙값, 같은 요일 주문이 SAME_DAY_MIN 회 미만이면 직전 4회 중앙값."""
+    q = past["수량"].to_numpy(float)
+    same = q[[d.weekday() == D.weekday() for d in past["청구일자"]]][-SAME_DAY_N:]
+    return float(np.median(same)) if len(same) >= SAME_DAY_MIN else float(np.median(q[-4:]))
 
 
 @dataclass
@@ -278,7 +290,7 @@ class Engine:
         g = self.b.by_item[key]
         past = g[(g["청구일자"] < D) & (g["청구일자"] >= D - timedelta(days=365))]
         supplier, unit = (past["거래처"].mode().iloc[0] if len(past) else g["거래처"].iloc[-1]), g["발주단위"].iloc[-1]
-        out = dict(_key=key, 코드=key[0], 거래처=supplier, 품목=key[1], 규격=key[2], 단위=unit, 상태="", 시즌="", 확률=np.nan, 권장수량=np.nan, 상한수량=np.nan, 기준수량=np.nan, 규모비=np.nan,
+        out = dict(_key=key, 코드=key[0], 거래처=supplier, 품목=key[1], 규격=key[2], 단위=unit, 상태="", 시즌="", 확률=np.nan, 권장수량=np.nan, 상한수량=np.nan, 기준수량=np.nan, 직전4회수량=np.nan, 규모비=np.nan,
                    입고예정일=None, 커버일수=np.nan, 직전발주=None, 재고=np.nan, 소비예상=np.nan, 재고주의="", 사유="", **{f: np.nan for f in FEATURES})
         if len(past) < MIN_ORDERS:
             return out | dict(상태="불규칙", 사유=f"최근 1년 주문 {len(past)}회 (정기 {MIN_ORDERS}회 이상 필요)")
@@ -309,10 +321,10 @@ class Engine:
         arr_gaps = np.diff(sorted(x.toordinal() for x in win["도착"]))
         raw_gap = float(np.median(arr_gaps)) if len(arr_gaps) else 1.0
         gap = int(np.clip(round(W / len(win)), 1, MAX_GAP))               # 평균 주문 주기 = 커버 기간
-        base = float(past["수량"].tail(4).median())                         # 평소 주문량
+        base = usual_qty(past, D)                                            # 평소 주문량 (같은 요일 기준)
         f_cover = self.sales(D, A, A + timedelta(days=gap))
-        scale = f_cover / (gap * S_win / W)                                  # 규모비 = 앞으로의 예측 매출 ÷ 평소 매출
-        q = base * (scale ** (self.beta_down if scale < 1 else self.beta_up))
+        scale = f_cover / (gap * S_win / W)                                  # 규모비 = 앞으로의 예측 매출 ÷ 평소 매출 (시점 모델의 입력, 상한수량에 쓴다. 권장수량은 곱하지 않는다)
+        q = base
         hi = max(q, base * (scale ** self.beta_up)) * 1.25
         since = (min(D, self.data_end + timedelta(days=1)) - od[-1]).days   # 자료가 끝난 뒤 날짜는 '자료 마지막 날 다음 날' 기준 (모델이 본 적 없는 경과일로 외삽하지 않게). 구매청구가 매출 자료보다 늦으면 구매청구 끝 기준
         feat = dict(gapratio=min(4.0, since / mg), over=float(since >= mg - 0.5), dow=float(np.mean([x.weekday() == D.weekday() for x in od])),
@@ -345,7 +357,7 @@ class Engine:
         rnd = lambda x: float(max(step, np.round(x / step) * step))
         up = lambda x: float(max(step, np.ceil(x / step - 1e-9) * step))
         last = past.iloc[-1]
-        out |= dict(상태="재고 확인" if long_cycle else ("발주" if due else "보류"), 확률=p, 권장수량=rnd(q), 상한수량=up(hi), 기준수량=base, 규모비=scale,
+        out |= dict(상태="재고 확인" if long_cycle else ("발주" if due else "보류"), 확률=p, 권장수량=rnd(q), 상한수량=up(hi), 기준수량=base, 직전4회수량=float(past["수량"].tail(4).median()), 규모비=scale,
                     입고예정일=A, 커버일수=gap, 직전발주=f"{last['청구일자']:%m-%d} {last['수량']:g}", **feat,
                     사유=(f"주문 간격 중앙값 {raw_gap:.0f}일 — 재고 없이는 시점 판단 불가, 마지막 발주 {since}일 전"
                           + (f" · 시뮬레이션 재고 {ref:.1f}{unit}(입고 전 소비 {need:.1f}{unit}) 참고" if ref is not None else "") if long_cycle else why))
@@ -395,14 +407,14 @@ def evaluate(R: pd.DataFrame, title: str = "") -> dict:
     out["auc"] = auc(y, reg["확률"].to_numpy(float)) if reg["확률"].notna().all() else float("nan")
     hit = reg[reg["실제발주"]].dropna(subset=["실제수량"])
     w = lambda c: float((hit["실제수량"] - c).abs().sum() / hit["실제수량"].sum() * 100)
-    out["수량"] = {"n": len(hit), "엔진": w(hit["권장수량"]), "직전4회": w(hit["기준수량"])}
+    out["수량"] = {"n": len(hit), "엔진": w(hit["권장수량"]), "직전4회": w(hit["직전4회수량"])}
     if title:
         print(f"■ {title}: 정기 품목 판단 {out['n']:,}건 (재고 확인 {out['재고확인']:,}건 제외), 실제 발주 비율 {y.mean() * 100:.0f}%")
         for nm in ("엔진", "간격규칙", "전부"):
             p, r, f = out[nm]
             print(f"   시점 {nm:6s} 정밀도 {p * 100:4.1f}%  재현율 {r * 100:4.1f}%  F1 {f * 100:4.1f}%")
         print(f"   발주 확률 AUC {out['auc']:.3f}")
-        print(f"   수량 (실제 발주 {out['수량']['n']:,}건): 엔진 WAPE {out['수량']['엔진']:.1f}%  | 평소 주문량 그대로 {out['수량']['직전4회']:.1f}%")
+        print(f"   수량 (실제 발주 {out['수량']['n']:,}건): 엔진 WAPE {out['수량']['엔진']:.1f}%  | 직전 4회 주문량 그대로 {out['수량']['직전4회']:.1f}%")
     return out
 
 

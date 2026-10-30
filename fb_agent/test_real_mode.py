@@ -94,7 +94,7 @@ views.render(get_leaf("po-engine"))
 '''
 def render_engine(y, m, d):
     return AppTest.from_string(ENGINE.format(y=y, m=m, d=d), default_timeout=300).run()
-a1, a2, a3 = render_engine(2026, 10, 1), render_engine(2026, 10, 30), render_engine(2026, 10, 4)
+a1, a2, a3 = render_engine(2026, 10, 1), render_engine(2026, 11, 4), render_engine(2026, 10, 4)
 btn = [b for b in a1.button if b.label.startswith("구매청구 만들기")]
 n0 = len(a1.session_state["purchase_requests"])
 made = a2_ = None
@@ -208,9 +208,9 @@ class RealMode(unittest.TestCase):
         self.assertGreaterEqual(r["sup_cards"], 2)                                     # 거래처마다 카드와 '이 업체 청구' 버튼
         self.assertRegex(r["orders_header"][0], r"오늘 발주 추천 \((\d+)건\)")
         self.assertEqual(r["plan_expander"], [True, True])                              # 발주일 예측(시뮬레이션)이 있는 날짜에는 '앞으로 2주 발주 예정'
-        self.assertEqual(r["sim_caption"], [False, True])                                # 10-01 은 실사 후 14일 안(실사 추정), 10-30 은 시뮬레이션 재고를 참고로
+        self.assertEqual(r["sim_caption"], [False, True])                                # 10-01 은 실사 후 14일 안(실사 추정), 11-04 는 시뮬레이션 재고를 참고로
         self.assertEqual(r["warn_ok"], 0)                                              # 자료 끝 3일 안이면 경고 없음
-        self.assertEqual(r["warn_stale"], 1)                                           # 구매청구 자료(10-24)가 끝난 지 3일을 넘은 10-30 에는 경고
+        self.assertEqual(r["warn_stale"], 1)                                           # 구매청구 자료(10-30)가 끝난 지 3일을 넘은 11-04 에는 경고
         self.assertEqual(r["sunday_success"], 1)                                       # 일요일은 발주일이 아니라는 안내
         self.assertEqual(len(r["download"]), 1)
 

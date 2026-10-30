@@ -125,6 +125,9 @@ class Params:
     level: str = "median"    # 평소 재고 수준: 월말 실사의 중앙값 | 평균
     day_share: float = 0.1   # 이 비율 이상의 입고가 있었던 요일을 입고 요일로 본다 (너무 좁히면 입고가 막혀 재고가 줄어든다)
     round_at: float = 0.5    # lumps="round" 에서 평소 입고 단위의 이만큼 모자라면 한 단위를 들여온다 (0.5 = 반올림)
+    rate_mode: str = "habit"  # 소비 속도: habit(최근 소비 실적) | bom(표준 bom × 영수증 판매량, BOM 에 없는 품목은 habit) | blend(둘의 평균)
+    k_mix: int = 3           # bom: 메뉴 구성(믹스)을 보는 최근 개월 수
+    k_ratio: int = 6         # bom: 이론 대비 실제 비율(폐기·로스·직원 식사 등 bom 밖의 양)을 보는 최근 개월 수
     lumps: str = "cont"      # 입고 크기: cont(평소 수준까지 필요한 만큼) | round(평소 입고 단위의 배수로 반올림) | min1(부족하면 최소 1단위, 과잉 입고라 쓰지 않음)
 
 
@@ -136,6 +139,10 @@ def fit_items(L: Ledger, origin: str, plan: SalesPlan, p: Params) -> pd.DataFram
     hm = ms[-p.k_rate:]
     hm = [m for m in hm if m in cons.columns]
     rate = cons[hm].clip(lower=0).sum(axis=1) / float(sales.reindex(hm).sum())
+    if p.rate_mode != "habit":
+        from bom_rate import bom_rate
+        b = bom_rate(L, origin, sales, p.k_mix, p.k_ratio).reindex(rate.index)
+        rate = b.where(b.notna(), rate) if p.rate_mode == "bom" else ((rate + b) / 2).where(b.notna(), rate)
     if p.stop_if_last_zero and origin in cons.columns:
         rate = rate.where(cons[origin].clip(lower=0) > 0, 0.0)
     lvl_m = ms[-p.k_level:]
