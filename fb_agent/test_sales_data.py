@@ -49,7 +49,7 @@ class Aggregates(unittest.TestCase):
 @unittest.skipUnless(HAS, "집계 표가 없음 (python -m prep.sales_aggregates)")
 class RealSales(unittest.TestCase):
     def test_period_and_business_days(self):
-        self.assertEqual((sd.first_date(), sd.last_date()), (date(2024, 1, 2), date(2026, 9, 30)))
+        self.assertEqual((sd.first_date(), sd.last_date()), (date(2024, 1, 2), date(2026, 10, 29)))
         self.assertEqual(len(sd.daily(date(2024, 1, 1), date(2026, 9, 30))), 965)
 
     def test_daily_matches_pos_and_receipts_within_a_tiny_gap(self):
@@ -72,7 +72,7 @@ class RealSales(unittest.TestCase):
         self.assertTrue(sd.receipts(date(2030, 1, 1)).empty)
 
     def test_anchor_and_latest_day(self):
-        self.assertEqual(sd.anchor(date(2026, 10, 23)), date(2026, 9, 30))
+        self.assertEqual(sd.anchor(date(2026, 10, 31)), date(2026, 10, 29))
         self.assertEqual(sd.anchor(date(2026, 3, 1)), date(2026, 3, 1))
         self.assertEqual(sd.latest_day(date(2026, 2, 17)), date(2026, 2, 15))   # 설 전날(2/16)·설날(2/17) 휴점 → 2/15(일)
 

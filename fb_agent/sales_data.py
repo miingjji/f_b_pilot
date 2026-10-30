@@ -38,22 +38,33 @@ def _agg_cached(name: str) -> pd.DataFrame:
 
 
 @lru_cache(maxsize=1)
+def _customers() -> pd.Series:
+    """일별 객수 (index=날짜). 영수증 집계(일자별.csv) 뒤에, 영수증이 아직 없는 달의 POS 일자별 객수(일자별객수_*.csv)를 잇는다."""
+    c = _agg("일자별").assign(날짜=lambda t: pd.to_datetime(t["날짜"]).dt.date).set_index("날짜")["객수"]
+    for f in sorted(AGG.glob("일자별객수_*.csv")):
+        e = pd.read_csv(f, encoding="utf-8-sig")
+        e = e.assign(날짜=pd.to_datetime(e["날짜"]).dt.date).set_index("날짜")["객수"]
+        c = pd.concat([c, e[e.index > c.index.max()]])
+    return c
+
+
+@lru_cache(maxsize=1)
 def _pos_daily() -> pd.DataFrame:
-    """POS 일자별 매출 (영업일만, index=날짜). 객수·시간대·메뉴·결제 집계(수불부 영수증)가 있는 날까지만 쓴다.
-    일자별 매출 정제본은 그보다 늦은 날(2026-10 등)까지 있지만 그날들은 객수를 몰라, 매출 화면에 넣으면 객수 0·객단가 계산이 틀어진다.
+    """POS 일자별 매출 (영업일만, index=날짜). 객수가 있는 날까지만 쓴다.
+    일자별 매출 정제본이 객수보다 늦은 날까지 있으면 객수 0·객단가 계산이 틀어지므로 그날들은 뺀다.
     그 구간의 일자별 매출은 매출 예측·발주 엔진(sales_forecast.load_history)이 정제본을 직접 읽어서 쓴다."""
     parts = [pd.read_csv(f) for f in sorted(CLEANED.glob("20*/매출일자별_정제.csv"))]
     d = pd.concat(parts, ignore_index=True)
     d = d[d["영업여부"] == "영업"].copy()
     d["날짜"] = pd.to_datetime(d["매출일자"]).dt.date
-    d = d[d["날짜"] <= pd.to_datetime(_agg("일자별")["날짜"]).dt.date.max()]
+    d = d[d["날짜"] <= _customers().index.max()]
     return d.set_index("날짜")[["총매출", "실매출", "순매출", "영수증수"]]
 
 
 @lru_cache(maxsize=1)
 def _daily_all() -> pd.DataFrame:
     p = _pos_daily()
-    c = _agg("일자별").assign(날짜=lambda t: pd.to_datetime(t["날짜"]).dt.date).set_index("날짜")["객수"]
+    c = _customers()
     out = pd.DataFrame({"date": pd.to_datetime(pd.Index(p.index)), "sales": p["순매출"].astype(int).values, "gross": p["총매출"].astype(int).values,
                         "discount": (p["총매출"] - p["실매출"]).astype(int).values, "vat": (p["실매출"] - p["순매출"]).astype(int).values,
                         "customers": c.reindex(p.index).fillna(0).astype(int).values, "receipts": p["영수증수"].astype(int).values}, index=p.index)
@@ -109,6 +120,8 @@ def monthly(end: date, months: int = 12) -> pd.DataFrame:
 def hourly(d: date) -> pd.DataFrame:
     """그날 시간대별 순매출·객수 (영수증 시각의 시 기준, 매출이 있는 시간대만)."""
     h = _agg("시간대별")
+    for f in sorted(AGG.glob("시간대별_*.csv")):          # 영수증이 아직 없는 달의 POS 시간대별 매출
+        h = pd.concat([h, pd.read_csv(f, encoding="utf-8-sig")], ignore_index=True)
     h = h[h["날짜"] == f"{d:%Y-%m-%d}"]
     return pd.DataFrame({"hour": h["시"].astype(int).values, "sales": h["순매출"].astype(int).values, "customers": h["객수"].astype(int).values})
 
