@@ -211,16 +211,36 @@ def task_cards(today: date, cal, recs):
                               on_click=open_page, args=(t["leaf"],))
 
 
-def summary_cards(today: date):
+def kpi_basis(today: date, cal) -> dict:
+    """매출·객수 카드의 기준. 영업일인 오늘 값이 아직 없으면 지난주 같은 요일 값을 예상으로 쓰고, 그것도 없으면 마지막 영업일 실제 값."""
+    if cal.is_open(today) and today > sd.last_date():
+        prev = sd.day_sales(today - timedelta(days=7))
+        if prev:
+            return {"day": today, "now": prev, "ref": None, "estimate": True, "basis": today - timedelta(days=7)}
     ref = sd.latest_day(today)                                    # 오늘이 데이터 끝보다 뒤이거나 쉬는 날이면 마지막 영업일
     now = sd.day_sales(ref) if ref else None
-    last_week = sd.day_sales(ref - timedelta(days=7)) if ref else None
-    when = f"{ref:%m-%d}" if ref else "최근"
-    cards = [
-        (f"{when} 매출", won_short(now["sales"]) if now else "데이터 없음",
-         (pct_delta(now["sales"], last_week["sales"]) + " 전주 같은 요일") if now and last_week else None),
-        (f"{when} 객수", f"{now['customers']:,}명" if now else "데이터 없음", f"객단가 {won_short(now['ticket'])}" if now else None),
-    ]
+    return {"day": ref, "now": now, "ref": ref, "estimate": False, "basis": None,
+            "last_week": sd.day_sales(ref - timedelta(days=7)) if ref else None}
+
+
+def summary_cards(today: date, cal):
+    k = kpi_basis(today, cal)
+    now, ref = k["now"], k["day"]
+    if k["estimate"]:
+        b = k["basis"]
+        when = f"{ref:%m-%d} 예상"
+        cards = [
+            (f"{when} 매출", won_short(now["sales"]), f"지난주 {dow(b)}요일({b:%m-%d}) 실제값"),
+            (f"{when} 객수", f"{now['customers']:,}명", f"지난주 {dow(b)}요일 · 객단가 {won_short(now['ticket'])}"),
+        ]
+    else:
+        last_week = k["last_week"]
+        when = f"{ref:%m-%d}" if ref else "최근"
+        cards = [
+            (f"{when} 매출", won_short(now["sales"]) if now else "데이터 없음",
+             (pct_delta(now["sales"], last_week["sales"]) + " 전주 같은 요일") if now and last_week else None),
+            (f"{when} 객수", f"{now['customers']:,}명" if now else "데이터 없음", f"객단가 {won_short(now['ticket'])}" if now else None),
+        ]
     with st.container(horizontal=True):
         for i, (label, value, delta) in enumerate(cards):
             with st.container(key=f"kpi-{zlib.crc32(label.encode()):x}"):                # style.py 의 KPI 카드 CSS 대상
@@ -270,7 +290,7 @@ def draw_grid(weeks: list, by_day: dict, today: date, sel: date, month: int | No
 def dashboard(leaf: Leaf):
     today, cal, recs = get_today(), get_calendar(), get_recs()
     task_cards(today, cal, recs)
-    summary_cards(today)
+    summary_cards(today, cal)
     sel = ss.sel_day
     expanded = bool(ss.get("cal_expanded", False))
     m = ss.cal_month

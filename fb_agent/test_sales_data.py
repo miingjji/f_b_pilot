@@ -118,3 +118,39 @@ class RealSales(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS, "집계 표가 없음 (python -m prep.sales_aggregates)")
+class DashboardKpi(unittest.TestCase):
+    """대시보드 매출·객수 카드: 오늘 값이 없으면 지난주 같은 요일 값을 예상으로 쓴다."""
+
+    def setUp(self):
+        from models import StoreCalendar
+        self.cal = StoreCalendar(frozenset(), frozenset())
+
+    def test_today_without_data_uses_same_weekday_last_week(self):
+        from views.home import kpi_basis
+        k = kpi_basis(date(2026, 10, 31), self.cal)         # 토요일, 데이터는 10/29 까지
+        self.assertTrue(k["estimate"])
+        self.assertEqual((k["day"], k["basis"], k["now"]["customers"]), (date(2026, 10, 31), date(2026, 10, 24), 413))
+
+    def test_day_with_data_shows_actual(self):
+        from views.home import kpi_basis
+        k = kpi_basis(date(2026, 10, 29), self.cal)
+        self.assertFalse(k["estimate"])
+        self.assertEqual((k["day"], k["now"]["customers"]), (date(2026, 10, 29), 100))
+
+    def test_closed_today_falls_back_to_last_business_day(self):
+        from models import StoreCalendar
+        from views.home import kpi_basis
+        k = kpi_basis(date(2026, 10, 31), StoreCalendar(frozenset(), frozenset({date(2026, 10, 31)})))
+        self.assertFalse(k["estimate"])
+        self.assertEqual(k["day"], date(2026, 10, 29))
+
+
+class KstToday(unittest.TestCase):
+    def test_default_today_is_korean_date(self):
+        from datetime import datetime
+        import config
+        self.assertEqual(config.default_today(), datetime.now(config.KST).date())
+        self.assertEqual(config.KST.utcoffset(None).total_seconds(), 9 * 3600)
