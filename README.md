@@ -70,7 +70,7 @@ Claude에게 "매장 관리자가 매일 아침 발주·재고·매출을 한 �
 
 기준선보다 나빠 버린 방법: 수요×소비율 수량 계산(오차 43%), 재고 추정만으로 발주 시점 판단(F1 58%), 발주 엔진을 입고 생성기로 쓰기(오차 70~200%).
 
-**Claude Code 작업 화면 5장** (`docs/evidence/`)
+**Claude Code 작업 화면 6장** (`docs/evidence/`)
 
 1. **원본 파일 확인** — 마크다운으로 변환해 올린 수불부 20개를 찾고, 4월 파일이 3월 복사본이 아니라 제목만 잘못 남은 4월 데이터임을 해시·합계 대조로 밝혔습니다.
    ![원본 파일 확인](docs/evidence/1-markdown-cleaning.png)
@@ -82,6 +82,7 @@ Claude에게 "매장 관리자가 매일 아침 발주·재고·매출을 한 �
    ![알고리즘 구조](docs/evidence/4-algorithm-structure.png)
 5. **현장 규칙 검증** — 사용자가 준 휴점 규칙이 2025·2026년 무매출일 24일을 모두 설명함을 데이터로 확인했습니다.
    ![휴점 규칙 검증](docs/evidence/5-closure-rules-verified.png)
+6. ![BOM 가설과 검증 계획](docs/evidence/6-bom-hypothesis-validation-plan.png)
 
 자동 테스트 440개 통과 (`test_inventory_sim.py`, `test_reorder_engine.py`, `test_sales_forecast.py`, `test_stock_sim.py`, `test_prep_*.py` 등). 방법·수치 문서는 `fb_agent/docs/INVENTORY_SIM.md`, `DATA_CLEANING.md`, `LEDGER_RECONCILE.md`에 있습니다.
 
