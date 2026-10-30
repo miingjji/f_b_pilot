@@ -1,7 +1,7 @@
 """발주 추천 엔진 v0 (Streamlit 비의존).
 
   python reorder_engine.py [--date YYYY-MM-DD]        그날의 추천 (기본: 오늘)
-  python reorder_engine.py --eval                     2025 하반기로 학습 → 2026-01~09 로 검증한 평가표
+  python reorder_engine.py --eval                     2024-01~2025-12 로 학습 → 2026-01~09 로 검증한 평가표
   python reorder_engine.py --fit 시작 끝              그 기간으로 발주 확률 모델을 학습해 data/model/발주확률.json 에 저장
 
 재고(실사·폐기·로스)가 아직 없다. 그래서 '언제'는 품목의 주문 습관으로, '얼마나'는 평소 주문량으로 맞추고, 재고가 들어오면 recommend(on_hand=...) 로 실제 재고를 쓴다.
@@ -74,6 +74,7 @@ def prf(y: np.ndarray, pred: np.ndarray) -> tuple[float, float, float]:
     return p, r, (2 * p * r / (p + r) if p + r else 0.0)
 
 
+TRAIN_START, TRAIN_END = date(2024, 1, 1), date(2025, 12, 31)   # 시점 모델 학습 기간 (검증은 2026-01~09). 학습 시작을 2025-07 로 해도 F1 이 77% 로 같았다(2024-01 부터는 76.9%)
 SAME_DAY_N = 3          # 평소 주문량: 같은 요일 최근 이 횟수의 중앙값
 SAME_DAY_MIN = 2        # 같은 요일 주문이 이만큼 안 되면 직전 4회 중앙값으로 대신한다
 
@@ -472,8 +473,8 @@ def main() -> int:
     a = ap.parse_args()
     if a.eval:
         e = Engine(model=None)
-        m = fit_model(e, date(2025, 7, 1), date(2025, 12, 31))
-        print(f"학습(2025-07~12): 발주 확률 모델 AUC {m.info['auc']:.3f}, 임계값 {m.th:.2f}, 계수(표준화) {dict(zip(['절편'] + FEATURES, np.round(m.w, 2)))}\n")
+        m = fit_model(e, TRAIN_START, TRAIN_END)
+        print(f"학습({TRAIN_START:%Y-%m}~{TRAIN_END:%Y-%m}): 발주 확률 모델 AUC {m.info['auc']:.3f}, 임계값 {m.th:.2f}, 계수(표준화) {dict(zip(['절편'] + FEATURES, np.round(m.w, 2)))}\n")
         e.model = m
         ev = evaluate(replay(e, date(2026, 1, 1), date(2026, 9, 30)), "검증 2026-01~09 (학습에 쓰지 않은 기간)")
         print()
@@ -481,7 +482,7 @@ def main() -> int:
         sr |= season_start_recall(e, date(2026, 1, 1), date(2026, 9, 30))
         EVAL_PATH.parent.mkdir(parents=True, exist_ok=True)
         EVAL_PATH.write_text(json.dumps({
-            "학습기간": "2025-07-01~2025-12-31", "검증기간": "2026-01-01~2026-09-30", "판단건수": ev["n"],
+            "학습기간": f"{TRAIN_START}~{TRAIN_END}", "검증기간": "2026-01-01~2026-09-30", "판단건수": ev["n"],
             "시점": {nm: dict(zip(("정밀도", "재현율", "F1"), map(float, ev[nm]))) for nm in ("엔진", "간격규칙", "전부")}, "AUC": ev["auc"],
             "수량": ev["수량"], "시즌": sr}, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"\n저장: {EVAL_PATH}")
