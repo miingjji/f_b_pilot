@@ -64,7 +64,7 @@ GitHub 저장소와 VS Code f_b_pilot 폴더를 Claude Code와 연결하고, Cla
 
 **Claude Code 작업 화면** (`docs/evidence/`)
 
-1. **원본 파일 확인** — 마크다운으로 변환해 올린 수불부 20개를 찾고, 이 과정 이후 24년도 수불부 파일도 추가해서 넣고 진행하였습니다.
+1. **원본 파일 확인** —마크다운 수불부 20개를 확인한 뒤 24년도 수불부도 추가했습니다.
    ![원본 파일 확인](docs/evidence/1-markdown-cleaning.png)
 2. **가상 데이터 제거** — 가상 값을 지우고 실제 데이터로만 활용하였습니다.
    ![가상 데이터 제거](docs/evidence/2-remove-synthetic-data.png)
