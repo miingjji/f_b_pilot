@@ -1,7 +1,7 @@
 """발주 추천 화면의 근거 표시 도우미: 예상 범위와 검증 정확도 문구."""
 import unittest
 
-from views.purchase import qty_range, reliability_line
+from views.purchase import md_range, qty_range, reliability_line
 
 EV = {"검증기간": "2026-01-01~2026-09-30", "시점": {"엔진": {"정밀도": 0.67, "재현율": 0.91, "F1": 0.77}}, "수량": {"엔진": 31.0}}
 
@@ -34,3 +34,10 @@ class ReliabilityLineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MarkdownTildeTest(unittest.TestCase):
+    def test_range_tilde_is_escaped_so_two_periods_do_not_become_strikethrough(self):
+        self.assertEqual(md_range("2024-01-01~2025-12-31"), "2024-01-01\\~2025-12-31")
+        line = f"(학습 {md_range('2024-01-01~2025-12-31')} → 학습에 쓰지 않은 {md_range('2026-01-01~2026-09-30')})"
+        self.assertEqual(line.count("~"), line.count("\\~"))               # 이스케이프 안 된 ~ 가 없다
