@@ -4,7 +4,7 @@
 앱이 보여 주는 값은 모두 실제 데이터이고, 근거가 없는 값은 '데이터 없음'으로 표시한다 (가상 값을 만들지 않는다).
 """
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
@@ -13,8 +13,9 @@ REAL_DIR = APP_DIR / "data" / "real"
 MASTER_DIR = Path(os.environ["FB_MASTER_DIR"]) if os.environ.get("FB_MASTER_DIR") else REAL_DIR
 TEST_MASTER = MASTER_DIR != REAL_DIR
 STORES = ("수원점",)
+KST = timezone(timedelta(hours=9))          # 배포 서버(UTC)에서도 한국 날짜로 '오늘'을 정하기 위해 고정
 
 
 def default_today() -> date:
-    """기준일 기본값은 실제 오늘 (설정에서 바꿀 수 있음). 매출 화면은 데이터가 끝난 뒤라면 마지막 영업일을 기준으로 보여 준다."""
-    return date.today()
+    """기준일 기본값은 한국시간 기준 실제 오늘 (설정에서 바꿀 수 있음). 매출 화면은 오늘 값이 없으면 지난주 같은 요일 값을 예상으로 보여 준다."""
+    return datetime.now(KST).date()
