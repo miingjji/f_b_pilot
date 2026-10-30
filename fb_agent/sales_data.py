@@ -39,11 +39,14 @@ def _agg_cached(name: str) -> pd.DataFrame:
 
 @lru_cache(maxsize=1)
 def _pos_daily() -> pd.DataFrame:
-    """POS 일자별 매출 (영업일만, index=날짜)."""
+    """POS 일자별 매출 (영업일만, index=날짜). 객수·시간대·메뉴·결제 집계(수불부 영수증)가 있는 날까지만 쓴다.
+    일자별 매출 정제본은 그보다 늦은 날(2026-10 등)까지 있지만 그날들은 객수를 몰라, 매출 화면에 넣으면 객수 0·객단가 계산이 틀어진다.
+    그 구간의 일자별 매출은 매출 예측·발주 엔진(sales_forecast.load_history)이 정제본을 직접 읽어서 쓴다."""
     parts = [pd.read_csv(f) for f in sorted(CLEANED.glob("20*/매출일자별_정제.csv"))]
     d = pd.concat(parts, ignore_index=True)
     d = d[d["영업여부"] == "영업"].copy()
     d["날짜"] = pd.to_datetime(d["매출일자"]).dt.date
+    d = d[d["날짜"] <= pd.to_datetime(_agg("일자별")["날짜"]).dt.date.max()]
     return d.set_index("날짜")[["총매출", "실매출", "순매출", "영수증수"]]
 
 
