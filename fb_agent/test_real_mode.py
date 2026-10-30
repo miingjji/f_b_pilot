@@ -116,6 +116,7 @@ out["engine"] = {
     "orders_header": [h.value for h in a1.subheader if h.value.startswith("오늘 발주 추천")],
     "plan_expander": [any("앞으로 2주 발주 예정" in x.label for x in at.expander) for at in (a1, a2)],
     "sim_caption": [any("시뮬레이션 재고를 참고로" in x.label for x in at.expander) for at in (a1, a2)],
+    "verify_md": [m.value for m in a1.markdown if "검증 결과" in m.value],                 # 학습·검증 기간의 ~ 가 이스케이프돼야 날짜가 붙지 않는다
     "warn_ok": len(a1.warning), "warn_stale": len(a2.warning), "sunday_success": len(a3.success),
     "download": [b.label for b in a1.get("download_button")] if hasattr(a1, "get") else [],
 }
@@ -209,6 +210,9 @@ class RealMode(unittest.TestCase):
         self.assertRegex(r["orders_header"][0], r"오늘 발주 추천 \((\d+)건\)")
         self.assertEqual(r["plan_expander"], [True, True])                              # 발주일 예측(시뮬레이션)이 있는 날짜에는 '앞으로 2주 발주 예정'
         self.assertEqual(r["sim_caption"], [False, True])                                # 10-01 은 실사 후 14일 안(실사 추정), 11-04 는 시뮬레이션 재고를 참고로
+        self.assertEqual(len(r["verify_md"]), 1)
+        self.assertGreaterEqual(r["verify_md"][0].count("\\~"), 2)                      # 학습·검증 기간 두 곳
+        self.assertEqual(r["verify_md"][0].count("~"), r["verify_md"][0].count("\\~"))  # 이스케이프 안 된 ~ 없음 (취소선 방지)
         self.assertEqual(r["warn_ok"], 0)                                              # 자료 끝 3일 안이면 경고 없음
         self.assertEqual(r["warn_stale"], 1)                                           # 구매청구 자료(10-30)가 끝난 지 3일을 넘은 11-04 에는 경고
         self.assertEqual(r["sunday_success"], 1)                                       # 일요일은 발주일이 아니라는 안내
