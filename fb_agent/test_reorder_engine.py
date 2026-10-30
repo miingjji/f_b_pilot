@@ -102,6 +102,21 @@ class SeasonAndRules(unittest.TestCase):
         self.assertAlmostEqual(r["규모비"], 1.0, delta=0.15)                                 # 매출이 평소와 같으면 규모비 ≈ 1
         self.assertEqual(r["권장수량"], 3.0)
 
+    def test_usual_quantity_follows_the_same_weekday_orders(self):
+        orders = [(d, 5 if d.weekday() == 3 else 2) for d in (date(2025, 6, 2) + timedelta(days=i) for i in range(200)) if d.weekday() != 6]
+        book = make_book({K: orders})
+        e = re_.Engine(book=book, hist=pd.Series(3_000_000.0, index=list(book.daily.index)), model=None)
+        thu, tue = e.recommend_item(K, date(2025, 12, 25)), e.recommend_item(K, date(2025, 12, 23))      # 목요일은 늘 5, 화요일은 늘 2
+        self.assertEqual((thu["기준수량"], thu["권장수량"]), (5.0, 5.0))
+        self.assertEqual((tue["기준수량"], tue["권장수량"]), (2.0, 2.0))
+
+    def test_usual_quantity_falls_back_to_last_four_orders_without_same_weekday_history(self):
+        past = pd.DataFrame({"청구일자": [date(2025, 12, 1), date(2025, 12, 2), date(2025, 12, 3), date(2025, 12, 4), date(2025, 12, 5)], "수량": [9, 1, 2, 4, 6]})
+        self.assertEqual(re_.usual_qty(past, date(2025, 12, 8)), 3.0)               # 월요일 주문이 12/1 하나뿐(2회 미만) → 직전 4회(1,2,4,6)의 중앙값
+        self.assertEqual(re_.usual_qty(past.iloc[1:], date(2025, 12, 8)), 3.0)      # 월요일 주문이 아예 없어도 같다
+        same = pd.DataFrame({"청구일자": [date(2025, 12, 1), date(2025, 12, 8), date(2025, 12, 15), date(2025, 12, 22)], "수량": [7, 3, 4, 8]})
+        self.assertEqual(re_.usual_qty(same, date(2025, 12, 29)), 4.0)              # 같은 요일 최근 3회(3,4,8)의 중앙값
+
     def test_on_hand_overrides_the_habit_rule(self):
         book = make_book({K: every(date(2025, 6, 2), date(2025, 12, 19), 2, 3)})
         hist = pd.Series(3_000_000.0, index=list(book.daily.index))
