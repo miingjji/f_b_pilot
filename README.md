@@ -26,7 +26,7 @@ pip install -r requirements.txt
 
 브라우저에서 `http://localhost:8501`을 엽니다. 실제 매장 데이터로 바로 뜨고, 근거가 없는 값은 `데이터 없음`으로 표시합니다.
 
-**테스트:** `python -m unittest discover -p "test_*.py"` (440개)
+**테스트:** `python -m unittest discover -p "test_*.py"` (444개)
 
 ## 작업 과정
 
