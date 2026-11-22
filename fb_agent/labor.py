@@ -20,9 +20,9 @@ PT_WAGE = 10400                       # 24~26년 동일 (주휴 미포함)
 START = {c: 9 + i for i, c in enumerate("ABCDEFGHIJK")}
 SHIFT_RX = re.compile(r"^([A-K])(S?)(\d{2}(?:\.\d)?)?(\+?)$")
 HQ_SUPPORT_NOTE = ("지원", "님")   # 본사에서 나오는 지원 인력 표기(예: 실장님지원, PM님C20) — 우리 매장 근무가 아니라 읽지 않는다
-YEBIGUN = {"예", "비", "군"}   # 예비군을 한 글자씩 나눠 쓴 칸 (김명률 2024-12, 3일). 근무시간 없음
-# 하루만 일하고 퇴사한 사람의 오타 칸 — 미해석 목록에 남기지 않는다 (사용자 확정 2026-11-22). (이름, 원문)
-IGNORED_CELLS = {("최동진", "??"), ("지현구", ".")}
+# 읽지 않아도 되는 칸(하루만 일하고 퇴사한 사람의 오타 등) — 미해석 목록에 남기지 않는다 (사용자 확정 2026-11-22). (이름, 원문)
+# 김명률 2024-12의 '예'·'비'·'군'은 예비군을 한 글자씩 나눠 쓴 칸 — 근무시간이 없고 따로 관리할 필요가 없어 무시 (사용자 확정 2026-11-22)
+IGNORED_CELLS = {("최동진", "??"), ("지현구", "."), ("김명률", "예"), ("김명률", "비"), ("김명률", "군")}
 KINDS = {"/": "휴무", "대휴": "대휴", "연차": "연차", "반차": "반차", "무급": "무급", "경조": "경조", "교육": "교육", "대휴반차": "반차", "훈련": "훈련"}
 ROLES = {"GM", "SM", "KM", "AM", "TR", "PT", "사원", "리더", "부점장", "점장", "지원", "중국인"}
 PHONE_RX = re.compile(r"^(\d{3,4}-\d{2,4}|01\d[-\d]*)$")
@@ -53,8 +53,6 @@ def classify(raw: str, d: date, table: dict) -> dict:
     if raw.strip() in KINDS:
         k = KINDS[raw.strip()]
         return {"종류": k, "근무시간": table.get("훈련", 8.0) if k == "훈련" else 0.0, "비고": ""}
-    if raw.strip() in YEBIGUN:
-        return {"종류": "예비군", "근무시간": 0.0, "비고": ""}
     if any(w in raw for w in HQ_SUPPORT_NOTE):
         return {"종류": "본사지원", "근무시간": 0.0, "비고": ""}
     note = ""
@@ -211,7 +209,7 @@ def person_month(df: pd.DataFrame) -> pd.DataFrame:
     out = g.agg(구분=("구분", "first"), 직급=("직급", "first"), 직급순위=("직급순위", "min"), 주부서=("주부서", "first"),
                 근무일수=("종류", lambda s: int(s.isin(["근무", "훈련"]).sum())), 근무시간=("근무시간", "sum"),
                 대휴=("종류", lambda s: int((s == "대휴").sum())), 연차=("종류", lambda s: int((s == "연차").sum())),
-                반차=("종류", lambda s: int((s == "반차").sum())), 예비군=("종류", lambda s: int((s == "예비군").sum()))).reset_index()
+                반차=("종류", lambda s: int((s == "반차").sum()))).reset_index()
     out["유급휴가시간"] = out["대휴"] * 8.0 + out["연차"] * 8.0 + out["반차"] * 4.0
     out["기준시간대비"] = (out["근무시간"] - BASE_HOURS).where(out["구분"] != "PT")   # 직원·리더만. 양수 = 연장(OT) 추정
     return out
