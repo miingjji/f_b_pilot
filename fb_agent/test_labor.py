@@ -43,6 +43,14 @@ def _rows(name, role, dept, days):
     return [{"월": d.strftime("%Y-%m"), "부서": dept, "이름": name, "직급": role, "날짜": d, "원문": "A20.5", "종류": "근무", "근무시간": h, "비고": ""} for d, h in days]
 
 
+class IgnoredCellTest(unittest.TestCase):
+    def test_지정한_오타만_무시하고_다른_사람의_오타는_미해석(self):
+        self.assertEqual(labor._cell("최동진", "??", WEEKDAY, TABLE)["종류"], "무시")
+        self.assertEqual(labor._cell("지현구", ".", WEEKDAY, TABLE)["종류"], "무시")
+        self.assertEqual(labor._cell("다른사람", "??", WEEKDAY, TABLE)["종류"], "미해석")
+        self.assertEqual(labor._cell("최동진", "", WEEKDAY, TABLE)["종류"], "빈칸")
+
+
 class AggregateTest(unittest.TestCase):
     def test_중국인은_직급_없는_직원_리더는_별도_시급(self):
         df = labor.tidy(pd.DataFrame(_rows("가", "중국인", "BK", [(WEEKDAY, 9.5)]) + _rows("나", "PT리더", "FOH", [(WEEKDAY, 9.5)]) + _rows("다", "PT", "FOH", [(WEEKDAY, 5.0)])))

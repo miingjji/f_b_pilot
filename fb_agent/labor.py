@@ -21,6 +21,8 @@ START = {c: 9 + i for i, c in enumerate("ABCDEFGHIJK")}
 SHIFT_RX = re.compile(r"^([A-K])(S?)(\d{2}(?:\.\d)?)?(\+?)$")
 HQ_SUPPORT_NOTE = ("지원", "님")   # 본사에서 나오는 지원 인력 표기(예: 실장님지원, PM님C20) — 우리 매장 근무가 아니라 읽지 않는다
 YEBIGUN = {"예", "비", "군"}   # 예비군을 한 글자씩 나눠 쓴 칸 (김명률 2024-12, 3일). 근무시간 없음
+# 하루만 일하고 퇴사한 사람의 오타 칸 — 미해석 목록에 남기지 않는다 (사용자 확정 2026-11-22). (이름, 원문)
+IGNORED_CELLS = {("최동진", "??"), ("지현구", ".")}
 KINDS = {"/": "휴무", "대휴": "대휴", "연차": "연차", "반차": "반차", "무급": "무급", "경조": "경조", "교육": "교육", "대휴반차": "반차", "훈련": "훈련"}
 ROLES = {"GM", "SM", "KM", "AM", "TR", "PT", "사원", "리더", "부점장", "점장", "지원", "중국인"}
 PHONE_RX = re.compile(r"^(\d{3,4}-\d{2,4}|01\d[-\d]*)$")
@@ -70,6 +72,15 @@ def classify(raw: str, d: date, table: dict) -> dict:
     return {"종류": "근무", "근무시간": dur - brk, "비고": (note + " 표없음계산").strip()}
 
 
+def _cell(name: str, raw: str, d: date, table: dict) -> dict:
+    if not raw:
+        return {"종류": "빈칸", "근무시간": 0.0, "비고": ""}
+    r = classify(raw, d, table)
+    if r["종류"] == "미해석" and (name, raw) in IGNORED_CELLS:
+        return {"종류": "무시", "근무시간": 0.0, "비고": "기록 오류(무시)"}
+    return r
+
+
 def parse_sheet(book, sheet, table: dict, month_hint: str) -> list[dict]:
     hr = next((r for r in range(8) if _text(sheet.cell_value(r, 1)) == "일자"), None)
     if hr is None:
@@ -101,7 +112,7 @@ def parse_sheet(book, sheet, table: dict, month_hint: str) -> list[dict]:
             c, d = dd
             raw = _text(sheet.cell_value(r, c))
             rows.append({"월": month_hint, "부서": sheet.name[:3].strip("("), "이름": name, "직급": role or f"({last_role})", "사번": sabun,
-                         "날짜": d, "원문": raw, "시트근무시간": sheet_hours, **(classify(raw, d, table) if raw else {"종류": "빈칸", "근무시간": 0.0, "비고": ""})})
+                         "날짜": d, "원문": raw, "시트근무시간": sheet_hours, **_cell(name, raw, d, table)})
     return rows
 
 
