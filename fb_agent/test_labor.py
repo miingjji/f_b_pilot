@@ -47,7 +47,10 @@ class IgnoredCellTest(unittest.TestCase):
     def test_지정한_오타만_무시하고_다른_사람의_오타는_미해석(self):
         self.assertEqual(labor._cell("최동진", "??", WEEKDAY, TABLE)["종류"], "무시")
         self.assertEqual(labor._cell("지현구", ".", WEEKDAY, TABLE)["종류"], "무시")
+        for ch in "예비군":                                    # 김명률 예비군(한 글자씩)
+            self.assertEqual(labor._cell("김명률", ch, WEEKDAY, TABLE)["종류"], "무시")
         self.assertEqual(labor._cell("다른사람", "??", WEEKDAY, TABLE)["종류"], "미해석")
+        self.assertEqual(labor._cell("다른사람", "예", WEEKDAY, TABLE)["종류"], "미해석")
         self.assertEqual(labor._cell("최동진", "", WEEKDAY, TABLE)["종류"], "빈칸")
 
 
@@ -124,11 +127,6 @@ class RoleHistoryTest(unittest.TestCase):
         self.assertEqual(ranks, sorted(ranks))
         self.assertEqual(labor.RANK["SM"], labor.RANK["KM"])
         self.assertGreater(labor.RANK[""], labor.RANK["PT"])      # 직급 없는 직원
-
-    def test_예비군_한글자는_예비군_0시간(self):
-        for ch in "예비군":
-            r = labor.classify(ch, WEEKDAY, TABLE)
-            self.assertEqual((r["종류"], r["근무시간"]), ("예비군", 0.0))
 
 
 if __name__ == "__main__":
